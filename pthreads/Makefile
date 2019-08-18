@@ -1,9 +1,9 @@
-CC = gcc
-AR = ar
+CC := gcc
+AR := ar
 DEBUG = 1
 OSTYPE = $(shell uname -s)
 
-CFLAGS = -Wall -I.
+CFLAGS := -Wall -I.
 
 ifneq ($(DEBUG), 0)
 CFLAGS += -g -DDEBUG
@@ -38,7 +38,7 @@ endif
 endif
 endif
 
-PREFIX = $(shell which $(CC) | sed 's/\/bin\/$(CC)//')
+PREFIX := $(shell which $(CC) | sed 's/\/bin\/$(CC)//')
 
 OBJ = \
 	pthread.o \
