@@ -19,24 +19,40 @@ ifeq ($(OSTYPE), AROS)
 CFLAGS += -march=i586
 else
 M68K = $(shell which m68k-amigaos-gcc 2>/dev/null)
+MOS = $(shell which ppc-morphos-gcc 2>/dev/null)
+WOS = $(shell which ppc-warpos-gcc 2>/dev/null)
+OS4 = $(shell which ppc-amigaos-gcc 2>/dev/null)
+
 ifneq ($(M68K),)
 CFLAGS = -Os -fomit-frame-pointer -noixemul -isystem .
 CC = m68k-amigaos-gcc
-AR = m68k-amigaos-ar 
+AR = m68k-amigaos-ar
 endif
+
+ifneq ($(MOS),)
+CFLAGS = -noixemul -DAROS_ALMOST_COMPATIBLE .
+CC = ppc-morphos-gcc
+AR = ppc-morphos-ar
+endif
+
 endif
 endif
 
+PREFIX = $(shell which $(CC) | sed 's/\/bin\/$(CC)//')
 
 OBJ = \
 	pthread.o \
 	sched.o \
 	semaphore.o
 
+install: libpthread.a
+	@echo "Installing to prefix: $(PREFIX)"
+	@cp -fvr libpthread.a $(PREFIX)/lib/
+	@cp -fvr *.h $(PREFIX)/include/
 all: libpthread.a
 
 libpthread.a: $(OBJ)
 	$(AR) rcs $@ $?
 
 clean:
-	rm -f $(OBJ)
+	@rm -fvr $(OBJ)
