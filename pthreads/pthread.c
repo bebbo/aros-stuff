@@ -1834,6 +1834,7 @@ static void OnceCleanup(void *arg)
 	pthread_spin_unlock(&once_control->lock);
 }
 
+#ifndef __AMIGA__
 int pthread_once(pthread_once_t *once_control, void (*init_routine)(void))
 {
 	D(bug("%s(%p, %p)\n", __FUNCTION__, once_control, init_routine));
@@ -1856,6 +1857,7 @@ int pthread_once(pthread_once_t *once_control, void (*init_routine)(void))
 
 	return 0;
 }
+#endif
 
 //
 // Scheduling functions
