@@ -152,11 +152,11 @@ struct pthread_mutex
 
 typedef struct pthread_mutex pthread_mutex_t;
 
-//#ifndef __AROS__
+#ifndef __AROS__
 #define NULL_MINLIST {0, 0, 0}
-//#else
-//#define NULL_MINLIST {0, 0, {0}}
-//#endif
+#else
+#define NULL_MINLIST {0, 0, {0}}
+#endif
 #define NULL_MINNODE {0, 0}
 #define NULL_NODE {0, 0, 0, 0, 0}
 #define NULL_SEMAPHOREREQUEST {NULL_MINNODE, 0}
@@ -288,6 +288,7 @@ int pthread_once(pthread_once_t *once_control, void (*init_routine)(void));
 // Scheduling functions
 //
 
+int pthread_setschedprio(pthread_t thread, int prio);
 int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param *param);
 int pthread_getschedparam(pthread_t thread, int *policy, struct sched_param *param);
 int pthread_setconcurrency(int level);
@@ -401,6 +402,7 @@ int pthread_spin_unlock(pthread_spinlock_t *lock);
 int pthread_setname_np(pthread_t thread, const char *name);
 int pthread_getname_np(pthread_t thread, char *name, size_t len);
 int pthread_cond_timedwait_relative_np(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *reltime);
+int pthread_getattr_np(pthread_t thread, pthread_attr_t *attr);
 
 //
 // Cancellation cleanup
