@@ -1,7 +1,7 @@
 /*
   Copyright (C) 2014 Szilard Biro
   Copyright (C) 2018 Harry Sintonen
-  Copyright (C) 2019 Stefan "Bebbo" Franke - AmigaOS 3 port
+  Copyright (C) 2019/20 Stefan "Bebbo" Franke - AmigaOS 3 port / bug fixes
 
   This software is provided 'as-is', without any express or implied
   warranty.  In no event will the authors be held liable for any damages
@@ -128,7 +128,7 @@ static struct SignalSemaphore tls_sem;
 
 static int SemaphoreIsInvalid(struct SignalSemaphore *sem)
 {
-	DB2(bug("%s(%p)\n", __FUNCTION__, sem));
+	DB2(bug("%s(%ld)\n", __FUNCTION__, sem));
 
 	return (!sem || sem->ss_Link.ln_Type != NT_SIGNALSEM || sem->ss_WaitQueue.mlh_Tail != NULL);
 }
@@ -137,7 +137,7 @@ static int SemaphoreIsMine(struct SignalSemaphore *sem)
 {
 	struct Task *me;
 
-	DB2(bug("%s(%p)\n", __FUNCTION__, sem));
+	DB2(bug("%s(%ld)\n", __FUNCTION__, sem));
 
 #ifdef __AMIGA__
     me = SysBase->ThisTask;
@@ -149,7 +149,7 @@ static int SemaphoreIsMine(struct SignalSemaphore *sem)
 
 static ThreadInfo *GetThreadInfo(pthread_t thread)
 {
-	DB2(bug("%s(%u)\n", __FUNCTION__, thread));
+	DB2(bug("%s(%ld)\n", __FUNCTION__, thread));
 
 	// TODO: more robust error handling?
 	if (thread < numThreads)
@@ -162,7 +162,7 @@ static pthread_t GetThreadId(struct Task *task)
 {
 	pthread_t i;
 
-	DB2(bug("%s(%p)\n", __FUNCTION__, task));
+	DB2(bug("%s(%ld)\n", __FUNCTION__, task));
 
 	// 0 is main task, First thread id will be 1 so that it is different than default value of pthread_t
 	for (i = 0; i < numThreads; i++)
@@ -204,7 +204,7 @@ int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
 	TLSKey *tls;
 	int i;
 
-	D(bug("%s(%p, %p)\n", __FUNCTION__, key, destructor));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, key, destructor));
 
 	if (key == NULL)
 		return EINVAL;
@@ -255,7 +255,7 @@ int pthread_key_delete(pthread_key_t key)
 {
 	TLSKey *tls;
 
-	D(bug("%s(%u)\n", __FUNCTION__, key));
+	D(bug("%s(%ld)\n", __FUNCTION__, key));
 
 	if (key >= numTlskeys)
 		return EINVAL;
@@ -284,7 +284,7 @@ int pthread_setspecific(pthread_key_t key, const void *value)
 	ThreadInfo *inf;
 	TLSKey *tls;
 
-	D(bug("%s(%u)\n", __FUNCTION__, key));
+	D(bug("%s(%ld)\n", __FUNCTION__, key));
 
 	if (key >= numTlskeys)
 		return EINVAL;
@@ -314,7 +314,7 @@ void *pthread_getspecific(pthread_key_t key)
 	ThreadInfo *inf;
 	void *value = NULL;
 
-	D(bug("%s(%u)\n", __FUNCTION__, key));
+	D(bug("%s(%ld)\n", __FUNCTION__, key));
 
 	if (key >= PTHREAD_KEYS_MAX)
 		return NULL;
@@ -332,7 +332,7 @@ void *pthread_getspecific(pthread_key_t key)
 
 int pthread_mutexattr_init(pthread_mutexattr_t *attr)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, attr));
+	D(bug("%s(%ld)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -344,7 +344,7 @@ int pthread_mutexattr_init(pthread_mutexattr_t *attr)
 
 int pthread_mutexattr_destroy(pthread_mutexattr_t *attr)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, attr));
+	D(bug("%s(%ld)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -356,7 +356,7 @@ int pthread_mutexattr_destroy(pthread_mutexattr_t *attr)
 
 int pthread_mutexattr_gettype(pthread_mutexattr_t *attr, int *kind)
 {
-	D(bug("%s(%p, %p)\n", __FUNCTION__, attr, kind));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, kind));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -369,7 +369,7 @@ int pthread_mutexattr_gettype(pthread_mutexattr_t *attr, int *kind)
 
 int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int kind)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, attr));
+	D(bug("%s(%ld)\n", __FUNCTION__, attr));
 
 	if (attr == NULL || !(kind >= PTHREAD_MUTEX_NORMAL && kind <= PTHREAD_MUTEX_ERRORCHECK))
 		return EINVAL;
@@ -385,7 +385,7 @@ int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int kind)
 
 static int _pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr, BOOL staticinit)
 {
-	DB2(bug("%s(%p, %p)\n", __FUNCTION__, mutex, attr));
+	DB2(bug("%s(%ld, %ld)\n", __FUNCTION__, mutex, attr));
 
 	if (mutex == NULL)
 		return EINVAL;
@@ -402,14 +402,14 @@ static int _pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t
 
 int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr)
 {
-	D(bug("%s(%p, %p)\n", __FUNCTION__, mutex, attr));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, mutex, attr));
 
 	return _pthread_mutex_init(mutex, attr, FALSE);
 }
 
 int pthread_mutex_destroy(pthread_mutex_t *mutex)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, mutex));
+	D(bug("%s(%ld)\n", __FUNCTION__, mutex));
 
 	if (mutex == NULL)
 		return EINVAL;
@@ -435,7 +435,7 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex)
 
 int pthread_mutex_lock(pthread_mutex_t *mutex)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, mutex));
+	D(bug("%s(%ld)\n", __FUNCTION__, mutex));
 
 	if (mutex == NULL)
 		return EINVAL;
@@ -555,7 +555,7 @@ int pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *absti
 	struct timeval end, now;
 	int result;
 
-	D(bug("%s(%p, %p)\n", __FUNCTION__, mutex, abstime));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, mutex, abstime));
 
 	if (mutex == NULL)
 		return EINVAL;
@@ -591,7 +591,7 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex)
 {
 	ULONG ret;
 
-	D(bug("%s(%p)\n", __FUNCTION__, mutex));
+	D(bug("%s(%ld)\n", __FUNCTION__, mutex));
 
 	if (mutex == NULL)
 		return EINVAL;
@@ -610,7 +610,7 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex)
 
 int pthread_mutex_unlock(pthread_mutex_t *mutex)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, mutex));
+	D(bug("%s(%ld)\n", __FUNCTION__, mutex));
 
 	if (mutex == NULL)
 		return EINVAL;
@@ -633,7 +633,7 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex)
 
 int pthread_condattr_init(pthread_condattr_t *attr)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, attr));
+	D(bug("%s(%ld)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -645,7 +645,7 @@ int pthread_condattr_init(pthread_condattr_t *attr)
 
 int pthread_condattr_destroy(pthread_condattr_t *attr)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, attr));
+	D(bug("%s(%ld)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -661,7 +661,7 @@ int pthread_condattr_destroy(pthread_condattr_t *attr)
 
 int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr)
 {
-	D(bug("%s(%p, %p)\n", __FUNCTION__, cond, attr));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, cond, attr));
 
 	if (cond == NULL)
 		return EINVAL;
@@ -674,7 +674,7 @@ int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr)
 
 int pthread_cond_destroy(pthread_cond_t *cond)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, cond));
+	D(bug("%s(%ld)\n", __FUNCTION__, cond));
 
 	if (cond == NULL)
 		return EINVAL;
@@ -708,7 +708,7 @@ static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 	struct timerequest timerio;
 	struct Task *task;
 
-	DB2(bug("%s(%p, %p, %p)\n", __FUNCTION__, cond, mutex, abstime));
+	DB2(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, cond, mutex, abstime));
 
 	if (cond == NULL || mutex == NULL)
 		return EINVAL;
@@ -829,21 +829,21 @@ static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 
 int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime)
 {
-	D(bug("%s(%p, %p, %p)\n", __FUNCTION__, cond, mutex, abstime));
+	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, cond, mutex, abstime));
 
 	return _pthread_cond_timedwait(cond, mutex, abstime, FALSE);
 }
 
 int pthread_cond_timedwait_relative_np(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *reltime)
 {
-	D(bug("%s(%p, %p, %p)\n", __FUNCTION__, cond, mutex, reltime));
+	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, cond, mutex, reltime));
 
 	return _pthread_cond_timedwait(cond, mutex, reltime, TRUE);
 }
 
 int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, cond));
+	D(bug("%s(%ld)\n", __FUNCTION__, cond));
 
 	return _pthread_cond_timedwait(cond, mutex, NULL, FALSE);
 }
@@ -852,7 +852,7 @@ static int _pthread_cond_broadcast(pthread_cond_t *cond, BOOL onlyfirst)
 {
 	CondWaiter *waiter;
 
-	DB2(bug("%s(%p, %d)\n", __FUNCTION__, cond, onlyfirst));
+	DB2(bug("%s(%ld, %d)\n", __FUNCTION__, cond, onlyfirst));
 
 	if (cond == NULL)
 		return EINVAL;
@@ -875,14 +875,14 @@ static int _pthread_cond_broadcast(pthread_cond_t *cond, BOOL onlyfirst)
 
 int pthread_cond_signal(pthread_cond_t *cond)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, cond));
+	D(bug("%s(%ld)\n", __FUNCTION__, cond));
 
 	return _pthread_cond_broadcast(cond, TRUE);
 }
 
 int pthread_cond_broadcast(pthread_cond_t *cond)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, cond));
+	D(bug("%s(%ld)\n", __FUNCTION__, cond));
 
 	return _pthread_cond_broadcast(cond, FALSE);
 }
@@ -893,7 +893,7 @@ int pthread_cond_broadcast(pthread_cond_t *cond)
 
 int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t *attr, unsigned int count)
 {
-	D(bug("%s(%p, %p, %u)\n", __FUNCTION__, barrier, attr, count));
+	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, barrier, attr, count));
 
 	if (barrier == NULL || count == 0)
 		return EINVAL;
@@ -908,7 +908,7 @@ int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t
 
 int pthread_barrier_destroy(pthread_barrier_t *barrier)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, barrier));
+	D(bug("%s(%ld)\n", __FUNCTION__, barrier));
 
 	if (barrier == NULL)
 		return EINVAL;
@@ -935,7 +935,7 @@ int pthread_barrier_destroy(pthread_barrier_t *barrier)
 
 int pthread_barrier_wait(pthread_barrier_t *barrier)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, barrier));
+	D(bug("%s(%ld)\n", __FUNCTION__, barrier));
 
 	if (barrier == NULL)
 		return EINVAL;
@@ -984,7 +984,7 @@ int pthread_barrier_wait(pthread_barrier_t *barrier)
 
 int pthread_rwlockattr_init(pthread_rwlockattr_t *attr)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, attr));
+	D(bug("%s(%ld)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -996,7 +996,7 @@ int pthread_rwlockattr_init(pthread_rwlockattr_t *attr)
 
 int pthread_rwlockattr_destroy(pthread_rwlockattr_t *attr)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, attr));
+	D(bug("%s(%ld)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1012,7 +1012,7 @@ int pthread_rwlockattr_destroy(pthread_rwlockattr_t *attr)
 
 int pthread_rwlock_init(pthread_rwlock_t *lock, const pthread_rwlockattr_t *attr)
 {
-	D(bug("%s(%p, %p)\n", __FUNCTION__, lock, attr));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, lock, attr));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1024,7 +1024,7 @@ int pthread_rwlock_init(pthread_rwlock_t *lock, const pthread_rwlockattr_t *attr
 
 int pthread_rwlock_destroy(pthread_rwlock_t *lock)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, lock));
+	D(bug("%s(%ld)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1046,7 +1046,7 @@ int pthread_rwlock_tryrdlock(pthread_rwlock_t *lock)
 {
 	ULONG ret;
 
-	D(bug("%s(%p)\n", __FUNCTION__, lock));
+	D(bug("%s(%ld)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1064,7 +1064,7 @@ int pthread_rwlock_trywrlock(pthread_rwlock_t *lock)
 {
 	ULONG ret;
 
-	D(bug("%s(%p)\n", __FUNCTION__, lock));
+	D(bug("%s(%ld)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1080,7 +1080,7 @@ int pthread_rwlock_trywrlock(pthread_rwlock_t *lock)
 
 int pthread_rwlock_rdlock(pthread_rwlock_t *lock)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, lock));
+	D(bug("%s(%ld)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1108,7 +1108,7 @@ int pthread_rwlock_timedrdlock(pthread_rwlock_t *lock, const struct timespec *ab
 	struct timeval end;
 	int result;
 
-	D(bug("%s(%p, %p)\n", __FUNCTION__, lock, abstime));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, lock, abstime));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1145,7 +1145,7 @@ int pthread_rwlock_timedrdlock(pthread_rwlock_t *lock, const struct timespec *ab
 
 int pthread_rwlock_wrlock(pthread_rwlock_t *lock)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, lock));
+	D(bug("%s(%ld)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1169,7 +1169,7 @@ int pthread_rwlock_timedwrlock(pthread_rwlock_t *lock, const struct timespec *ab
 	struct timeval end;
 	int result;
 
-	D(bug("%s(%p, %p)\n", __FUNCTION__, lock, abstime));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, lock, abstime));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1206,7 +1206,7 @@ int pthread_rwlock_timedwrlock(pthread_rwlock_t *lock, const struct timespec *ab
 
 int pthread_rwlock_unlock(pthread_rwlock_t *lock)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, lock));
+	D(bug("%s(%ld)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1232,7 +1232,7 @@ int pthread_rwlock_unlock(pthread_rwlock_t *lock)
 
 int pthread_spin_init(pthread_spinlock_t *lock, int pshared)
 {
-	D(bug("%s(%p, %d)\n", __FUNCTION__, lock, pshared));
+	D(bug("%s(%ld, %d)\n", __FUNCTION__, lock, pshared));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1244,14 +1244,14 @@ int pthread_spin_init(pthread_spinlock_t *lock, int pshared)
 
 int pthread_spin_destroy(pthread_spinlock_t *lock)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, lock));
+	D(bug("%s(%ld)\n", __FUNCTION__, lock));
 
 	return 0;
 }
 
 int pthread_spin_lock(pthread_spinlock_t *lock)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, lock));
+	D(bug("%s(%ld)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1277,7 +1277,7 @@ int pthread_spin_lock(pthread_spinlock_t *lock)
 
 int pthread_spin_trylock(pthread_spinlock_t *lock)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, lock));
+	D(bug("%s(%ld)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1290,7 +1290,7 @@ int pthread_spin_trylock(pthread_spinlock_t *lock)
 
 int pthread_spin_unlock(pthread_spinlock_t *lock)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, lock));
+	D(bug("%s(%ld)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1308,7 +1308,7 @@ int pthread_attr_init(pthread_attr_t *attr)
 {
 	struct Task *task;
 
-	D(bug("%s(%p)\n", __FUNCTION__, attr));
+	D(bug("%s(%ld)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1333,7 +1333,7 @@ int pthread_attr_init(pthread_attr_t *attr)
 
 int pthread_attr_destroy(pthread_attr_t *attr)
 {
-	D(bug("%s(%p)\n", __FUNCTION__, attr));
+	D(bug("%s(%ld)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1345,7 +1345,7 @@ int pthread_attr_destroy(pthread_attr_t *attr)
 
 int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate)
 {
-	D(bug("%s(%p, %p)\n", __FUNCTION__, attr, detachstate));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, detachstate));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1358,7 +1358,7 @@ int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate)
 
 int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate)
 {
-	D(bug("%s(%p, %d)\n", __FUNCTION__, attr, detachstate));
+	D(bug("%s(%ld, %d)\n", __FUNCTION__, attr, detachstate));
 
 	if (attr == NULL || detachstate != PTHREAD_CREATE_JOINABLE)
 		return EINVAL;
@@ -1370,7 +1370,7 @@ int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate)
 
 int pthread_attr_getstack(const pthread_attr_t *attr, void **stackaddr, size_t *stacksize)
 {
-	D(bug("%s(%p, %p, %p)\n", __FUNCTION__, attr, stackaddr, stacksize));
+	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, attr, stackaddr, stacksize));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1386,7 +1386,7 @@ int pthread_attr_getstack(const pthread_attr_t *attr, void **stackaddr, size_t *
 
 int pthread_attr_setstack(pthread_attr_t *attr, void *stackaddr, size_t stacksize)
 {
-	D(bug("%s(%p, %p, %u)\n", __FUNCTION__, attr, stackaddr, stacksize));
+	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, attr, stackaddr, stacksize));
 
 	if (attr == NULL || (stackaddr != NULL && stacksize == 0))
 		return EINVAL;
@@ -1399,21 +1399,21 @@ int pthread_attr_setstack(pthread_attr_t *attr, void *stackaddr, size_t stacksiz
 
 int pthread_attr_getstacksize(const pthread_attr_t *attr, size_t *stacksize)
 {
-	D(bug("%s(%p, %p)\n", __FUNCTION__, attr, stacksize));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, stacksize));
 
 	return pthread_attr_getstack(attr, NULL, stacksize);
 }
 
 int pthread_attr_setstacksize(pthread_attr_t *attr, size_t stacksize)
 {
-	D(bug("%s(%p, %u)\n", __FUNCTION__, attr, stacksize));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, stacksize));
 
 	return pthread_attr_setstack(attr, NULL, stacksize);
 }
 
 int pthread_attr_getschedparam(const pthread_attr_t *attr, struct sched_param *param)
 {
-	D(bug("%s(%p, %p)\n", __FUNCTION__, attr, param));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, param));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1426,7 +1426,7 @@ int pthread_attr_getschedparam(const pthread_attr_t *attr, struct sched_param *p
 
 int pthread_attr_setschedparam(pthread_attr_t *attr, const struct sched_param *param)
 {
-	D(bug("%s(%p, %p)\n", __FUNCTION__, attr, param));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, param));
 
 	if (attr == NULL || param == NULL)
 		return EINVAL;
@@ -1461,7 +1461,7 @@ AROS_UFH3S(ULONG, CancelHandler,
     AROS_USERFUNC_INIT
 #endif
 
-	DB2(bug("%s(%u, %p, %p)\n", __FUNCTION__, signals, data, SysBase));
+	DB2(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, signals, data, SysBase));
 
 	pthread_testcancel();
 
@@ -1510,6 +1510,7 @@ static void StarterFunc(void)
 	// set a jump point for pthread_exit
 	if (!setjmp(inf->jmp))
 	{
+		DB2(bug("stack soll %ld, ist %ld\n", inf->attr.stacksize, (unsigned)proc->pr_Task.tc_SPUpper - (unsigned)proc->pr_Task.tc_SPLower));
 		// custom stack requires special handling
 		if (inf->attr.stackaddr != NULL && inf->attr.stacksize > 0)
 		{
@@ -1573,6 +1574,7 @@ static void StarterFunc(void)
 	// tell the parent thread that we are done
 	Forbid();
 	inf->finished = TRUE;
+	inf->task = NULL;
 	Signal(inf->parent, SIGF_PARENT);
 }
 
@@ -1583,7 +1585,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
 	size_t oldlen;
 	pthread_t threadnew;
 
-	D(bug("%s(%p, %p, %p, %p)\n", __FUNCTION__, thread, attr, start, arg));
+	D(bug("%s(%ld, %ld, %ld, %ld)\n", __FUNCTION__, thread, attr, start, arg));
 
 	if (thread == NULL || start == NULL)
 		return EINVAL;
@@ -1599,24 +1601,40 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
 	}
 
 	if (threadnew == numThreads) {
-		// resize the thread's storage.
-		unsigned n = numThreads + numThreads + 2;
-		if (n > PTHREAD_THREADS_MAX)
-			n = PTHREAD_THREADS_MAX;
-
-		ThreadInfo * t = (ThreadInfo *)realloc(_threads, n * sizeof(ThreadInfo));
-		if (!t) {
-			ReleaseSemaphore(&thread_sem);
-			return EAGAIN;
+		pthread_t i = 1;
+		// try to find a free slot
+		for (; i < numThreads; ++i) {
+			if (_threads[i].task == 0)
+				break;
 		}
 
-		_threads = t;
-		numThreads = n;
+		if (i < threadnew)
+			threadnew = i;
+		else {
+			// resize the thread's storage.
+			unsigned n = numThreads + numThreads + 2;
+			if (n > PTHREAD_THREADS_MAX)
+				n = PTHREAD_THREADS_MAX;
+
+			if (n != numThreads) {
+				ThreadInfo * t = (ThreadInfo *)realloc(_threads, n * sizeof(ThreadInfo));
+				if (!t) {
+					ReleaseSemaphore(&thread_sem);
+					return EAGAIN;
+				}
+
+				memset(&t[numThreads], 0, (n - numThreads) * sizeof(ThreadInfo));
+
+				_threads = t;
+				numThreads = n;
+			}
+		}
 	}
 
 	// prepare the ThreadInfo structure
 	inf = GetThreadInfo(threadnew);
 	memset(inf, 0, sizeof(ThreadInfo));
+	D(bug("thread=%ld, inf=%ld\n", threadnew, inf));
 	inf->start = start;
 	inf->arg = arg;
 #ifdef __AMIGA__
@@ -1670,7 +1688,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
 
 int pthread_detach(pthread_t thread)
 {
-	D(bug("%s(%u) not implemented\n", __FUNCTION__, thread));
+	D(bug("%s(%ld) not implemented\n", __FUNCTION__, thread));
 
 	return ESRCH;
 }
@@ -1679,7 +1697,7 @@ int pthread_join(pthread_t thread, void **value_ptr)
 {
 	ThreadInfo *inf;
 
-	D(bug("%s(%u, %p)\n", __FUNCTION__, thread, value_ptr));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, thread, value_ptr));
 
 	inf = GetThreadInfo(thread);
 
@@ -1688,22 +1706,27 @@ int pthread_join(pthread_t thread, void **value_ptr)
 
 	pthread_testcancel();
 
+	D(bug("%s finished before wait (%ld, inf=%ld, fini=%ld)\n", __FUNCTION__, thread, inf, inf->finished));
 	while (!inf->finished)
 		Wait(SIGF_PARENT);
 
+	D(bug("%s finished after wait (%ld, %ld)\n", __FUNCTION__, thread, inf->finished));
 	if (value_ptr)
 		*value_ptr = inf->ret;
 
+	inf->task = 0; // mark as free
+#if 0
 	ObtainSemaphore(&thread_sem);
 	memset(inf, 0, sizeof(ThreadInfo));
 	ReleaseSemaphore(&thread_sem);
+#endif
 
 	return 0;
 }
 
 int pthread_equal(pthread_t t1, pthread_t t2)
 {
-	D(bug("%s(%u, %u)\n", __FUNCTION__, t1, t2));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, t1, t2));
 
 	return (t1 == t2);
 }
@@ -1733,7 +1756,7 @@ int pthread_cancel(pthread_t thread)
 {
 	ThreadInfo *inf;
 
-	D(bug("%s(%u)\n", __FUNCTION__, thread));
+	D(bug("%s(%ld)\n", __FUNCTION__, thread));
 
 	inf = GetThreadInfo(thread);
 
@@ -1767,7 +1790,7 @@ int pthread_setcancelstate(int state, int *oldstate)
 	pthread_t thread;
 	ThreadInfo *inf;
 
-	D(bug("%s(%d, %p)\n", __FUNCTION__, state, oldstate));
+	D(bug("%s(%d, %ld)\n", __FUNCTION__, state, oldstate));
 
 	if (state != PTHREAD_CANCEL_ENABLE && state != PTHREAD_CANCEL_DISABLE)
 		return EINVAL;
@@ -1788,7 +1811,7 @@ int pthread_setcanceltype(int type, int *oldtype)
 	pthread_t thread;
 	ThreadInfo *inf;
 
-	D(bug("%s(%d, %p)\n", __FUNCTION__, type, oldtype));
+	D(bug("%s(%d, %ld)\n", __FUNCTION__, type, oldtype));
 
 	if (type != PTHREAD_CANCEL_DEFERRED && type != PTHREAD_CANCEL_ASYNCHRONOUS)
 		return EINVAL;
@@ -1824,9 +1847,10 @@ void pthread_exit(void *value_ptr)
 	ThreadInfo *inf;
 	CleanupHandler *handler;
 
-	D(bug("%s(%p)\n", __FUNCTION__, value_ptr));
+	D(bug("%s(%ld)\n", __FUNCTION__, value_ptr));
 
 	thread = pthread_self();
+
 	inf = GetThreadInfo(thread);
 	inf->ret = value_ptr;
 
@@ -1835,14 +1859,16 @@ void pthread_exit(void *value_ptr)
 		if (handler->routine)
 			handler->routine(handler->arg);
 
-	longjmp(inf->jmp, 1);
+	// only for real threads.
+	if (thread)
+		longjmp(inf->jmp, 1);
 }
 
 static void OnceCleanup(void *arg)
 {
 	pthread_once_t *once_control;
 
-	DB2(bug("%s(%p)\n", __FUNCTION__, arg));
+	DB2(bug("%s(%ld)\n", __FUNCTION__, arg));
 
 	once_control = (pthread_once_t *)arg;
 	pthread_spin_unlock(&once_control->lock);
@@ -1850,7 +1876,7 @@ static void OnceCleanup(void *arg)
 
 int pthread_once(pthread_once_t *once_control, void (*init_routine)(void))
 {
-	D(bug("%s(%p, %p)\n", __FUNCTION__, once_control, init_routine));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, once_control, init_routine));
 
 	if (once_control == NULL || init_routine == NULL)
 		return EINVAL;
@@ -1877,7 +1903,7 @@ int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param
 {
 	ThreadInfo *inf;
 
-	D(bug("%s(%u, %d, %p)\n", __FUNCTION__, thread, policy, param));
+	D(bug("%s(%ld, %d, %ld)\n", __FUNCTION__, thread, policy, param));
 
 	if (param == NULL)
 		return EINVAL;
@@ -1901,7 +1927,7 @@ int pthread_setname_np(pthread_t thread, const char *name)
 	char *currentname;
 	size_t namelen;
 
-	D(bug("%s(%u, %s)\n", __FUNCTION__, thread, name));
+	D(bug("%s(%ld, %s)\n", __FUNCTION__, thread, name));
 
 	if (name == NULL)
 		return ERANGE;
@@ -1931,7 +1957,7 @@ int pthread_getname_np(pthread_t thread, char *name, size_t len)
 	ThreadInfo *inf;
 	char *currentname;
 
-	D(bug("%s(%u, %p, %u)\n", __FUNCTION__, thread, name, len));
+	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, thread, name, len));
 
 	if (name == NULL || len == 0)
 		return ERANGE;
@@ -1962,7 +1988,7 @@ void pthread_cleanup_push(void (*routine)(void *), void *arg)
 	ThreadInfo *inf;
 	CleanupHandler *handler;
 
-	D(bug("%s(%p, %p)\n", __FUNCTION__, routine, arg));
+	D(bug("%s(%ld, %ld)\n", __FUNCTION__, routine, arg));
 
 	if (routine == NULL)
 		return;
@@ -2004,7 +2030,7 @@ void pthread_cleanup_pop(int execute)
 
 int pthread_kill(pthread_t thread, int sig)
 {
-	D(bug("%s(%u, %d) not implemented\n", __FUNCTION__, thread, sig));
+	D(bug("%s(%ld, %d) not implemented\n", __FUNCTION__, thread, sig));
 
 	return EINVAL;
 }
@@ -2030,6 +2056,12 @@ int __pthread_Init_Func(void)
 	InitSemaphore(&tls_sem);
 
 	// reserve ID 0 for the main thread
+	_threads = (ThreadInfo *)malloc(sizeof(ThreadInfo));
+	if (!_threads)
+		exit(10);
+	memset(_threads, 0, sizeof(ThreadInfo));
+	numThreads = 1;
+
 	ThreadInfo *inf = &_threads[0];
 #ifdef __AMIGA__
     inf->task = SysBase->ThisTask;
@@ -2050,12 +2082,15 @@ void __pthread_Exit_Func(void)
 	pthread_t i;
 #endif
 
+	/* main thread is no longer cancelable. */
+	GetThreadInfo(pthread_self())->cancelstate = PTHREAD_CANCEL_DISABLE;
+
 	DB2(bug("%s()\n", __FUNCTION__));
 
 	// wait for the threads?
 #if defined(__MORPHOS__) || defined(__AMIGA__)
 	// if we don't do this we can easily end up with unloaded code being executed
-	for (i = 1; i < PTHREAD_THREADS_MAX; i++)
+	for (i = 1; i < numThreads; i++)
 		pthread_join(i, NULL);
 #endif
 #ifdef __MORPHOS__
@@ -2064,8 +2099,8 @@ void __pthread_Exit_Func(void)
 }
 
 #if defined(__MORPHOS__) || defined(__AMIGA__)
-ADD2INIT(__pthread_Init_Func, -6);
-ADD2EXIT(__pthread_Exit_Func, -6);
+ADD2INIT(__pthread_Init_Func, -4); // above init cpp with -5
+ADD2EXIT(__pthread_Exit_Func, -4);
 #else
 static CONSTRUCTOR_P(__pthread_Init_Func, 100)
 {
