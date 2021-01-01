@@ -1,25 +1,25 @@
 /*
-  Copyright (C) 2014 Szilard Biro
-  Copyright (C) 2018 Harry Sintonen
-  Copyright (C) 2019/20 Stefan "Bebbo" Franke - AmigaOS 3 port / bug fixes
+ Copyright (C) 2014 Szilard Biro
+ Copyright (C) 2018 Harry Sintonen
+ Copyright (C) 2019/20 Stefan "Bebbo" Franke - AmigaOS 3 port / bug fixes
 
-  This software is provided 'as-is', without any express or implied
-  warranty.  In no event will the authors be held liable for any damages
-  arising from the use of this software.
+ This software is provided 'as-is', without any express or implied
+ warranty.  In no event will the authors be held liable for any damages
+ arising from the use of this software.
 
-  Permission is granted to anyone to use this software for any purpose,
-  including commercial applications, and to alter it and redistribute it
-  freely, subject to the following restrictions:
+ Permission is granted to anyone to use this software for any purpose,
+ including commercial applications, and to alter it and redistribute it
+ freely, subject to the following restrictions:
 
-  1. The origin of this software must not be misrepresented; you must not
-     claim that you wrote the original software. If you use this software
-     in a product, an acknowledgment in the product documentation would be
-     appreciated but is not required.
-  2. Altered source versions must be plainly marked as such, and must not be
-     misrepresented as being the original software.
-  3. This notice may not be removed or altered from any source distribution.
-*/
-
+ 1. The origin of this software must not be misrepresented; you must not
+ claim that you wrote the original software. If you use this software
+ in a product, an acknowledgment in the product documentation would be
+ appreciated but is not required.
+ 2. Altered source versions must be plainly marked as such, and must not be
+ misrepresented as being the original software.
+ 3. This notice may not be removed or altered from any source distribution.
+ */
+#define DEBUG 9
 #ifdef __MORPHOS__
 #include <sys/time.h>
 #endif
@@ -54,6 +54,8 @@
 
 #include <stabs.h>
 
+#define INITIALSIZE 1
+
 #ifndef IPTR
 #define IPTR ULONG
 #endif
@@ -63,7 +65,6 @@
 	    ((struct Node *)(n))->ln_Succ; \
 	    n=(void *)(((struct Node *)(n))->ln_Succ))
 #endif
-
 
 #define SIGB_PARENT SIGBREAKB_CTRL_F
 #define SIGF_PARENT (1 << SIGB_PARENT)
@@ -78,47 +79,44 @@
 
 //#define USE_ASYNC_CANCEL
 
-typedef struct
-{
+typedef struct {
 	struct MinNode node;
 	struct Task *task;
 	ULONG sigmask;
 } CondWaiter;
 
-typedef struct
-{
-	void (*destructor)(void *);
-	BOOL used;
+typedef struct {
+	void (*destructor)(void*);
+	short used;
 } TLSKey;
 
-typedef struct
-{
+typedef struct {
 	struct MinNode node;
-	void (*routine)(void *);
+	void (*routine)(void*);
 	void *arg;
 } CleanupHandler;
 
-typedef struct
-{
-	void *(*start)(void *);
+typedef struct {
+	void* (*start)(void*);
 	void *arg;
 	struct Task *parent;
-	int finished;
 	struct Task *task;
 	void *ret;
-	jmp_buf jmp;
 	pthread_attr_t attr;
 	void *tlsvalues[PTHREAD_KEYS_MAX];
 	struct MinList cleanup;
-	int cancelstate;
-	int canceltype;
-	int canceled;
+	char started;
+	char finished;
+	short cancelstate;
+	short canceltype;
+	short canceled;
+	jmp_buf jmp;
 } ThreadInfo;
 
-static ThreadInfo * _threads;
+static ThreadInfo *_threads;
 static unsigned numThreads;
 static struct SignalSemaphore thread_sem;
-static TLSKey * _tlskeys;
+static TLSKey *_tlskeys;
 static unsigned numTlskeys;
 static struct SignalSemaphore tls_sem;
 
@@ -126,29 +124,26 @@ static struct SignalSemaphore tls_sem;
 // Helper functions
 //
 
-static int SemaphoreIsInvalid(struct SignalSemaphore *sem)
-{
-	DB2(bug("%s(%ld)\n", __FUNCTION__, sem));
-
-	return (!sem || sem->ss_Link.ln_Type != NT_SIGNALSEM || sem->ss_WaitQueue.mlh_Tail != NULL);
+static int SemaphoreIsInvalid(struct SignalSemaphore *sem) {
+	int r = (!sem || sem->ss_Link.ln_Type != NT_SIGNALSEM || sem->ss_WaitQueue.mlh_Tail != NULL);
+	DB2(bug("%s(%8lx)=%ld\n", __FUNCTION__, sem, r));
+	return r;
 }
 
-static int SemaphoreIsMine(struct SignalSemaphore *sem)
-{
+static int SemaphoreIsMine(struct SignalSemaphore *sem) {
 	struct Task *me;
 
-	DB2(bug("%s(%ld)\n", __FUNCTION__, sem));
+	DB2(bug("%s(%8lx)\n", __FUNCTION__, sem));
 
 #ifdef __AMIGA__
-    me = SysBase->ThisTask;
+	me = SysBase->ThisTask;
 #else
 	me = FindTask(NULL);
 #endif
 	return (sem && sem->ss_NestCount > 0 && sem->ss_Owner == me);
 }
 
-static ThreadInfo *GetThreadInfo(pthread_t thread)
-{
+static ThreadInfo* GetThreadInfo(pthread_t thread) {
 	DB2(bug("%s(%ld)\n", __FUNCTION__, thread));
 
 	// TODO: more robust error handling?
@@ -158,15 +153,14 @@ static ThreadInfo *GetThreadInfo(pthread_t thread)
 	return 0;
 }
 
-static pthread_t GetThreadId(struct Task *task)
-{
+static pthread_t GetThreadId(struct Task *task) {
 	pthread_t i;
 
-	DB2(bug("%s(%ld)\n", __FUNCTION__, task));
+// would recurse...
+//	DB2(bug("%s(%ld)\n", __FUNCTION__, task));
 
-	// 0 is main task, First thread id will be 1 so that it is different than default value of pthread_t
-	for (i = 0; i < numThreads; i++)
-	{
+// 0 is main task, First thread id will be 1 so that it is different than default value of pthread_t
+	for (i = 0; i < numThreads; i++) {
 		if (_threads[i].task == task)
 			break;
 	}
@@ -199,8 +193,7 @@ static int __m68k_sync_val_compare_and_swap(int *v, int o, int n)
 // Thread specific data functions
 //
 
-int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
-{
+int pthread_key_create(pthread_key_t *key, void (*destructor)(void*)) {
 	TLSKey *tls;
 	int i;
 
@@ -211,18 +204,15 @@ int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
 
 	ObtainSemaphore(&tls_sem);
 
-	for (i = 0; i < numTlskeys; i++)
-	{
+	for (i = 0; i < numTlskeys; i++) {
 		if (_tlskeys[i].used == FALSE)
 			break;
 	}
 
-	if (i == PTHREAD_KEYS_MAX)
-	{
+	if (i == PTHREAD_KEYS_MAX) {
 		ReleaseSemaphore(&tls_sem);
 		return EAGAIN;
 	}
-
 
 	if (i == numTlskeys) {
 		// resize the thread's storage.
@@ -230,7 +220,7 @@ int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
 		if (n > PTHREAD_KEYS_MAX)
 			n = PTHREAD_KEYS_MAX;
 
-		TLSKey * t = (TLSKey *)realloc(_tlskeys, n * sizeof(TLSKey));
+		TLSKey *t = (TLSKey*) realloc(_tlskeys, n * sizeof(TLSKey));
 		if (!t) {
 			ReleaseSemaphore(&tls_sem);
 			return EAGAIN;
@@ -239,7 +229,7 @@ int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
 		_tlskeys = t;
 		numTlskeys = n;
 	}
-	
+
 	tls = &_tlskeys[i];
 	tls->used = TRUE;
 	tls->destructor = destructor;
@@ -251,8 +241,7 @@ int pthread_key_create(pthread_key_t *key, void (*destructor)(void *))
 	return 0;
 }
 
-int pthread_key_delete(pthread_key_t key)
-{
+int pthread_key_delete(pthread_key_t key) {
 	TLSKey *tls;
 
 	D(bug("%s(%ld)\n", __FUNCTION__, key));
@@ -264,8 +253,7 @@ int pthread_key_delete(pthread_key_t key)
 
 	ObtainSemaphore(&tls_sem);
 
-	if (tls->used == FALSE)
-	{
+	if (tls->used == FALSE) {
 		ReleaseSemaphore(&tls_sem);
 		return EINVAL;
 	}
@@ -278,8 +266,7 @@ int pthread_key_delete(pthread_key_t key)
 	return 0;
 }
 
-int pthread_setspecific(pthread_key_t key, const void *value)
-{
+int pthread_setspecific(pthread_key_t key, const void *value) {
 	pthread_t thread;
 	ThreadInfo *inf;
 	TLSKey *tls;
@@ -294,22 +281,22 @@ int pthread_setspecific(pthread_key_t key, const void *value)
 
 	ObtainSemaphoreShared(&tls_sem);
 
-	if (tls->used == FALSE)
-	{
+	if (tls->used == FALSE) {
 		ReleaseSemaphore(&tls_sem);
 		return EINVAL;
 	}
 
 	ReleaseSemaphore(&tls_sem);
 
+	ObtainSemaphore(&thread_sem);
 	inf = GetThreadInfo(thread);
-	inf->tlsvalues[key] = (void *)value;
+	inf->tlsvalues[key] = (void*) value;
+	ReleaseSemaphore(&thread_sem);
 
 	return 0;
 }
 
-void *pthread_getspecific(pthread_key_t key)
-{
+void* pthread_getspecific(pthread_key_t key) {
 	pthread_t thread;
 	ThreadInfo *inf;
 	void *value = NULL;
@@ -320,8 +307,11 @@ void *pthread_getspecific(pthread_key_t key)
 		return NULL;
 
 	thread = pthread_self();
+
+	ObtainSemaphore(&thread_sem);
 	inf = GetThreadInfo(thread);
 	value = inf->tlsvalues[key];
+	ReleaseSemaphore(&thread_sem);
 
 	return value;
 }
@@ -330,9 +320,8 @@ void *pthread_getspecific(pthread_key_t key)
 // Mutex attribute functions
 //
 
-int pthread_mutexattr_init(pthread_mutexattr_t *attr)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, attr));
+int pthread_mutexattr_init(pthread_mutexattr_t *attr) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -342,9 +331,8 @@ int pthread_mutexattr_init(pthread_mutexattr_t *attr)
 	return 0;
 }
 
-int pthread_mutexattr_destroy(pthread_mutexattr_t *attr)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, attr));
+int pthread_mutexattr_destroy(pthread_mutexattr_t *attr) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -354,9 +342,8 @@ int pthread_mutexattr_destroy(pthread_mutexattr_t *attr)
 	return 0;
 }
 
-int pthread_mutexattr_gettype(pthread_mutexattr_t *attr, int *kind)
-{
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, kind));
+int pthread_mutexattr_gettype(pthread_mutexattr_t *attr, int *kind) {
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, attr, kind));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -367,9 +354,8 @@ int pthread_mutexattr_gettype(pthread_mutexattr_t *attr, int *kind)
 	return 0;
 }
 
-int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int kind)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, attr));
+int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int kind) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, attr));
 
 	if (attr == NULL || !(kind >= PTHREAD_MUTEX_NORMAL && kind <= PTHREAD_MUTEX_ERRORCHECK))
 		return EINVAL;
@@ -383,9 +369,8 @@ int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int kind)
 // Mutex functions
 //
 
-static int _pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr, BOOL staticinit)
-{
-	DB2(bug("%s(%ld, %ld)\n", __FUNCTION__, mutex, attr));
+static int _pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr, BOOL staticinit) {
+	DB2(bug("%s(%8lx, %8lx)\n", __FUNCTION__, mutex, attr));
 
 	if (mutex == NULL)
 		return EINVAL;
@@ -400,16 +385,14 @@ static int _pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t
 	return 0;
 }
 
-int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr)
-{
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, mutex, attr));
+int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr) {
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, mutex, attr));
 
 	return _pthread_mutex_init(mutex, attr, FALSE);
 }
 
-int pthread_mutex_destroy(pthread_mutex_t *mutex)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, mutex));
+int pthread_mutex_destroy(pthread_mutex_t *mutex) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, mutex));
 
 	if (mutex == NULL)
 		return EINVAL;
@@ -418,11 +401,10 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex)
 	if (SemaphoreIsInvalid(&mutex->semaphore))
 		return 0;
 
-	if (/*mutex->incond ||*/ AttemptSemaphore(&mutex->semaphore) == FALSE)
+	if (/*mutex->incond ||*/AttemptSemaphore(&mutex->semaphore) == FALSE)
 		return EBUSY;
 
-	if (mutex->incond)
-	{
+	if (mutex->incond) {
 		ReleaseSemaphore(&mutex->semaphore);
 		return EBUSY;
 	}
@@ -433,30 +415,29 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex)
 	return 0;
 }
 
-int pthread_mutex_lock(pthread_mutex_t *mutex)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, mutex));
+int pthread_mutex_lock(pthread_mutex_t *mutex) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, mutex));
 
 	if (mutex == NULL)
 		return EINVAL;
 
-    struct SignalSemaphore * sigSem = &mutex->semaphore;
+	struct SignalSemaphore *sigSem = &mutex->semaphore;
 
 	// initialize static mutexes
-    if (SemaphoreIsInvalid(sigSem))
+	if (SemaphoreIsInvalid(sigSem))
 		_pthread_mutex_init(mutex, NULL, TRUE);
 
 	// normal mutexes would simply deadlock here
-    if (mutex->kind == PTHREAD_MUTEX_ERRORCHECK && SemaphoreIsMine(sigSem))
+	if (mutex->kind == PTHREAD_MUTEX_ERRORCHECK && SemaphoreIsMine(sigSem))
 		return EDEADLK;
 
-    ObtainSemaphore(sigSem);
+	ObtainSemaphore(sigSem);
 
-    if (mutex->kind == PTHREAD_MUTEX_NORMAL && sigSem->ss_NestCount > 1) {
-    	// should have blocked - fix this
-    	ReleaseSemaphore(sigSem);
-    	return EDEADLK;
-    }
+	if (mutex->kind == PTHREAD_MUTEX_NORMAL && sigSem->ss_NestCount > 1) {
+		// should have blocked - fix this
+		ReleaseSemaphore(sigSem);
+		return EDEADLK;
+	}
 #ifndef __AMIGA__
 	if (from->tv_secs >= unix_to_amiga)
 	{
@@ -472,22 +453,21 @@ int pthread_mutex_lock(pthread_mutex_t *mutex)
 	return 0;
 }
 #if defined(__MORPHOS__) || defined(__AMIGA__)
-static int _obtain_sema_timed(struct SignalSemaphore *sema, const struct timeval *end, int shared)
-{
+static int _obtain_sema_timed(struct SignalSemaphore *sema, const struct timeval *end, int shared) {
 	struct MsgPort msgport;
 	struct SemaphoreMessage msg;
 	struct Message *m1, *m2;
 	struct timerequest timerio;
-	struct Task * task;
+	struct Task *task;
 
 #ifdef __AMIGA__
-    task = SysBase->ThisTask;
+	task = SysBase->ThisTask;
 #else
 	task = FindTask(NULL);
 #endif
 
 	msgport.mp_SigBit = AllocSignal(-1);
-	if ((BYTE)msgport.mp_SigBit == -1)
+	if ((BYTE) msgport.mp_SigBit == -1)
 		return EINVAL;
 	msgport.mp_Node.ln_Type = NT_MSGPORT;
 	msgport.mp_Flags = PA_SIGNAL;
@@ -496,7 +476,7 @@ static int _obtain_sema_timed(struct SignalSemaphore *sema, const struct timeval
 
 	msg.ssm_Semaphore = 0;
 	msg.ssm_Message.mn_Node.ln_Type = NT_MESSAGE;
-	msg.ssm_Message.mn_Node.ln_Name = (char *)shared;
+	msg.ssm_Message.mn_Node.ln_Name = (char*) shared;
 	msg.ssm_Message.mn_ReplyPort = &msgport;
 
 	timerio.tr_node.io_Message.mn_Node.ln_Type = NT_MESSAGE;
@@ -505,18 +485,18 @@ static int _obtain_sema_timed(struct SignalSemaphore *sema, const struct timeval
 #ifdef __AMIGA__
 	timerio.tr_time = *end;
 	timerio.tr_node.io_Device = DOSBase->dl_TimeReq->tr_node.io_Device;
-	timerio.tr_node.io_Unit	= DOSBase->dl_TimeReq->tr_node.io_Unit;
+	timerio.tr_node.io_Unit = DOSBase->dl_TimeReq->tr_node.io_Unit;
 
 	// Procure is broken on older systems... hand made...
 	struct SemaphoreRequest sr;
 	sr.sr_Waiter = task;
 
-	SendIO((APTR)&timerio);
+	SendIO((APTR) & timerio);
 
-	ULONG mask = SIGF_SINGLE | (1<<msgport.mp_SigBit);
+	ULONG mask = SIGF_SINGLE | (1 << msgport.mp_SigBit);
 	Forbid();
 	task->tc_SigRecvd &= ~mask;
-	AddTail((struct List *)&sema->ss_WaitQueue, (struct Node *)&sr.sr_Link);
+	AddTail((struct List*) &sema->ss_WaitQueue, (struct Node*) &sr.sr_Link);
 	ULONG signal = Wait(mask);
 	Permit();
 
@@ -538,10 +518,9 @@ static int _obtain_sema_timed(struct SignalSemaphore *sema, const struct timeval
 		Vacate(sema, &msg);
 #endif
 
-	else
-	{
-		AbortIO((APTR)&timerio);
-		WaitIO((APTR)&timerio);
+	else {
+		AbortIO((APTR) & timerio);
+		WaitIO((APTR) & timerio);
 	}
 	FreeSignal(msgport.mp_SigBit);
 	if (msg.ssm_Semaphore == 0)
@@ -550,12 +529,11 @@ static int _obtain_sema_timed(struct SignalSemaphore *sema, const struct timeval
 }
 #endif
 
-int pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *abstime)
-{
+int pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *abstime) {
 	struct timeval end, now;
 	int result;
 
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, mutex, abstime));
+	D(bug("%s(%8lx, %7lx)\n", __FUNCTION__, mutex, abstime));
 
 	if (mutex == NULL)
 		return EINVAL;
@@ -587,11 +565,10 @@ int pthread_mutex_timedlock(pthread_mutex_t *mutex, const struct timespec *absti
 #endif
 }
 
-int pthread_mutex_trylock(pthread_mutex_t *mutex)
-{
+int pthread_mutex_trylock(pthread_mutex_t *mutex) {
 	ULONG ret;
 
-	D(bug("%s(%ld)\n", __FUNCTION__, mutex));
+	D(bug("%s(%8lx)\n", __FUNCTION__, mutex));
 
 	if (mutex == NULL)
 		return EINVAL;
@@ -608,9 +585,8 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex)
 	return (ret == TRUE) ? 0 : EBUSY;
 }
 
-int pthread_mutex_unlock(pthread_mutex_t *mutex)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, mutex));
+int pthread_mutex_unlock(pthread_mutex_t *mutex) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, mutex));
 
 	if (mutex == NULL)
 		return EINVAL;
@@ -631,9 +607,8 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex)
 // Condition variable attribute functions
 //
 
-int pthread_condattr_init(pthread_condattr_t *attr)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, attr));
+int pthread_condattr_init(pthread_condattr_t *attr) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -643,9 +618,8 @@ int pthread_condattr_init(pthread_condattr_t *attr)
 	return 0;
 }
 
-int pthread_condattr_destroy(pthread_condattr_t *attr)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, attr));
+int pthread_condattr_destroy(pthread_condattr_t *attr) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -659,22 +633,20 @@ int pthread_condattr_destroy(pthread_condattr_t *attr)
 // Condition variable functions
 //
 
-int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr)
-{
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, cond, attr));
+int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr) {
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, cond, attr));
 
 	if (cond == NULL)
 		return EINVAL;
 
 	InitSemaphore(&cond->semaphore);
-	NEWLIST((struct List *)&cond->waiters);
+	NEWLIST((struct List* )&cond->waiters);
 
 	return 0;
 }
 
-int pthread_cond_destroy(pthread_cond_t *cond)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, cond));
+int pthread_cond_destroy(pthread_cond_t *cond) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, cond));
 
 	if (cond == NULL)
 		return EINVAL;
@@ -686,8 +658,7 @@ int pthread_cond_destroy(pthread_cond_t *cond)
 	if (AttemptSemaphore(&cond->semaphore) == FALSE)
 		return EBUSY;
 
-	if (!IsListEmpty((struct List *)&cond->waiters))
-	{
+	if (!IsListEmpty((struct List*) &cond->waiters)) {
 		ReleaseSemaphore(&cond->semaphore);
 		return EBUSY;
 	}
@@ -698,8 +669,7 @@ int pthread_cond_destroy(pthread_cond_t *cond)
 	return 0;
 }
 
-static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime, BOOL relative)
-{
+static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime, BOOL relative) {
 	CondWaiter waiter;
 	BYTE signal;
 	ULONG sigs = 0;
@@ -708,7 +678,7 @@ static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 	struct timerequest timerio;
 	struct Task *task;
 
-	DB2(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, cond, mutex, abstime));
+	DB2(bug("%s(%8lx, %8lx, %8lx)\n", __FUNCTION__, cond, mutex, abstime));
 
 	if (cond == NULL || mutex == NULL)
 		return EINVAL;
@@ -720,13 +690,12 @@ static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 		pthread_cond_init(cond, NULL);
 
 #ifdef __AMIGA__
-    task = SysBase->ThisTask;
+	task = SysBase->ThisTask;
 #else
 	task = FindTask(NULL);
 #endif
 
-	if (abstime)
-	{
+	if (abstime) {
 		// prepare MsgPort
 		timermp.mp_Node.ln_Type = NT_MSGPORT;
 		timermp.mp_Node.ln_Pri = 0;
@@ -734,8 +703,7 @@ static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 		timermp.mp_Flags = PA_SIGNAL;
 		timermp.mp_SigTask = task;
 		signal = AllocSignal(-1);
-		if (signal == -1)
-		{
+		if (signal == -1) {
 			signal = SIGB_TIMER_FALLBACK;
 			SetSignal(SIGF_TIMER_FALLBACK, 0);
 		}
@@ -750,8 +718,7 @@ static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 		timerio.tr_node.io_Message.mn_Length = sizeof(struct timerequest);
 
 		// open timer.device
-		if (OpenDevice((STRPTR)TIMERNAME, UNIT_MICROHZ, &timerio.tr_node, 0) != 0)
-		{
+		if (OpenDevice((STRPTR) TIMERNAME, UNIT_MICROHZ, &timerio.tr_node, 0) != 0) {
 			if (timermp.mp_SigBit != SIGB_TIMER_FALLBACK)
 				FreeSignal(timermp.mp_SigBit);
 
@@ -762,8 +729,7 @@ static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 		timerio.tr_node.io_Command = TR_ADDREQUEST;
 		timerio.tr_node.io_Flags = 0;
 		TIMESPEC_TO_TIMEVAL(&timerio.tr_time, abstime);
-		if (!relative)
-		{
+		if (!relative) {
 			struct timeval starttime;
 			// absolute time has to be converted to relative
 			// GetSysTime can't be used due to the timezone offset in abstime
@@ -772,14 +738,13 @@ static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 		}
 		timermask = 1 << timermp.mp_SigBit;
 		sigs |= timermask;
-		SendIO((struct IORequest *)&timerio);
+		SendIO((struct IORequest*) &timerio);
 	}
 
 	// prepare a waiter node
 	waiter.task = task;
 	signal = AllocSignal(-1);
-	if (signal == -1)
-	{
+	if (signal == -1) {
 		signal = SIGB_COND_FALLBACK;
 		SetSignal(SIGF_COND_FALLBACK, 0);
 	}
@@ -788,7 +753,7 @@ static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 
 	// add it to the end of the list
 	ObtainSemaphore(&cond->semaphore);
-	AddTail((struct List *)&cond->waiters, (struct Node *)&waiter);
+	AddTail((struct List*) &cond->waiters, (struct Node*) &waiter);
 	ReleaseSemaphore(&cond->semaphore);
 
 	// wait for the condition to be signalled or the timeout
@@ -800,21 +765,19 @@ static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 
 	// remove the node from the list
 	ObtainSemaphore(&cond->semaphore);
-	Remove((struct Node *)&waiter);
+	Remove((struct Node*) &waiter);
 	ReleaseSemaphore(&cond->semaphore);
 
 	if (signal != SIGB_COND_FALLBACK)
 		FreeSignal(signal);
 
-	if (abstime)
-	{
+	if (abstime) {
 		// clean up the timerequest
-		if (!CheckIO((struct IORequest *)&timerio))
-		{
-			AbortIO((struct IORequest *)&timerio);
-			WaitIO((struct IORequest *)&timerio);
+		if (!CheckIO((struct IORequest*) &timerio)) {
+			AbortIO((struct IORequest*) &timerio);
+			WaitIO((struct IORequest*) &timerio);
 		}
-		CloseDevice((struct IORequest *)&timerio);
+		CloseDevice((struct IORequest*) &timerio);
 
 		if (timermp.mp_SigBit != SIGB_TIMER_FALLBACK)
 			FreeSignal(timermp.mp_SigBit);
@@ -827,32 +790,28 @@ static int _pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 	return 0;
 }
 
-int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime)
-{
-	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, cond, mutex, abstime));
+int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *abstime) {
+	D(bug("%s(%8lx, %8lx, %8lx)\n", __FUNCTION__, cond, mutex, abstime));
 
 	return _pthread_cond_timedwait(cond, mutex, abstime, FALSE);
 }
 
-int pthread_cond_timedwait_relative_np(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *reltime)
-{
-	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, cond, mutex, reltime));
+int pthread_cond_timedwait_relative_np(pthread_cond_t *cond, pthread_mutex_t *mutex, const struct timespec *reltime) {
+	D(bug("%s(%8lx, %8lx, %8lx)\n", __FUNCTION__, cond, mutex, reltime));
 
 	return _pthread_cond_timedwait(cond, mutex, reltime, TRUE);
 }
 
-int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, cond));
+int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, cond));
 
 	return _pthread_cond_timedwait(cond, mutex, NULL, FALSE);
 }
 
-static int _pthread_cond_broadcast(pthread_cond_t *cond, BOOL onlyfirst)
-{
+static int _pthread_cond_broadcast(pthread_cond_t *cond, BOOL onlyfirst) {
 	CondWaiter *waiter;
 
-	DB2(bug("%s(%ld, %d)\n", __FUNCTION__, cond, onlyfirst));
+	DB2(bug("%s(%8lx, %ld)\n", __FUNCTION__, cond, onlyfirst));
 
 	if (cond == NULL)
 		return EINVAL;
@@ -866,23 +825,22 @@ static int _pthread_cond_broadcast(pthread_cond_t *cond, BOOL onlyfirst)
 	ForeachNode(&cond->waiters, waiter)
 	{
 		Signal(waiter->task, waiter->sigmask);
-		if (onlyfirst) break;
+		if (onlyfirst)
+			break;
 	}
 	ReleaseSemaphore(&cond->semaphore);
 
 	return 0;
 }
 
-int pthread_cond_signal(pthread_cond_t *cond)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, cond));
+int pthread_cond_signal(pthread_cond_t *cond) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, cond));
 
 	return _pthread_cond_broadcast(cond, TRUE);
 }
 
-int pthread_cond_broadcast(pthread_cond_t *cond)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, cond));
+int pthread_cond_broadcast(pthread_cond_t *cond) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, cond));
 
 	return _pthread_cond_broadcast(cond, FALSE);
 }
@@ -891,9 +849,8 @@ int pthread_cond_broadcast(pthread_cond_t *cond)
 // Barrier functions
 //
 
-int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t *attr, unsigned int count)
-{
-	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, barrier, attr, count));
+int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t *attr, unsigned int count) {
+	D(bug("%s(%8lx, %8lx, %ld)\n", __FUNCTION__, barrier, attr, count));
 
 	if (barrier == NULL || count == 0)
 		return EINVAL;
@@ -906,9 +863,8 @@ int pthread_barrier_init(pthread_barrier_t *barrier, const pthread_barrierattr_t
 	return 0;
 }
 
-int pthread_barrier_destroy(pthread_barrier_t *barrier)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, barrier));
+int pthread_barrier_destroy(pthread_barrier_t *barrier) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, barrier));
 
 	if (barrier == NULL)
 		return EINVAL;
@@ -916,8 +872,7 @@ int pthread_barrier_destroy(pthread_barrier_t *barrier)
 	if (pthread_mutex_trylock(&barrier->lock) != 0)
 		return EBUSY;
 
-	if (barrier->total_height > PTHREAD_BARRIER_FLAG)
-	{
+	if (barrier->total_height > PTHREAD_BARRIER_FLAG) {
 		pthread_mutex_unlock(&barrier->lock);
 		return EBUSY;
 	}
@@ -933,9 +888,8 @@ int pthread_barrier_destroy(pthread_barrier_t *barrier)
 	return 0;
 }
 
-int pthread_barrier_wait(pthread_barrier_t *barrier)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, barrier));
+int pthread_barrier_wait(pthread_barrier_t *barrier) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, barrier));
 
 	if (barrier == NULL)
 		return EINVAL;
@@ -947,21 +901,19 @@ int pthread_barrier_wait(pthread_barrier_t *barrier)
 		pthread_cond_wait(&barrier->breeched, &barrier->lock);
 
 	// are we the first to enter?
-	if (barrier->total_height == PTHREAD_BARRIER_FLAG) barrier->total_height = 0;
+	if (barrier->total_height == PTHREAD_BARRIER_FLAG)
+		barrier->total_height = 0;
 
 	barrier->total_height++;
 
-	if (barrier->total_height == barrier->curr_height)
-	{
+	if (barrier->total_height == barrier->curr_height) {
 		barrier->total_height += PTHREAD_BARRIER_FLAG - 1;
 		pthread_cond_broadcast(&barrier->breeched);
 
 		pthread_mutex_unlock(&barrier->lock);
 
 		return PTHREAD_BARRIER_SERIAL_THREAD;
-	}
-	else
-	{
+	} else {
 		// wait until enough threads enter the barrier
 		while (barrier->total_height < PTHREAD_BARRIER_FLAG)
 			pthread_cond_wait(&barrier->breeched, &barrier->lock);
@@ -982,9 +934,8 @@ int pthread_barrier_wait(pthread_barrier_t *barrier)
 // Read-write lock attribute functions
 //
 
-int pthread_rwlockattr_init(pthread_rwlockattr_t *attr)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, attr));
+int pthread_rwlockattr_init(pthread_rwlockattr_t *attr) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -994,9 +945,8 @@ int pthread_rwlockattr_init(pthread_rwlockattr_t *attr)
 	return 0;
 }
 
-int pthread_rwlockattr_destroy(pthread_rwlockattr_t *attr)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, attr));
+int pthread_rwlockattr_destroy(pthread_rwlockattr_t *attr) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1010,9 +960,8 @@ int pthread_rwlockattr_destroy(pthread_rwlockattr_t *attr)
 // Read-write lock functions
 //
 
-int pthread_rwlock_init(pthread_rwlock_t *lock, const pthread_rwlockattr_t *attr)
-{
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, lock, attr));
+int pthread_rwlock_init(pthread_rwlock_t *lock, const pthread_rwlockattr_t *attr) {
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, lock, attr));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1022,9 +971,8 @@ int pthread_rwlock_init(pthread_rwlock_t *lock, const pthread_rwlockattr_t *attr
 	return 0;
 }
 
-int pthread_rwlock_destroy(pthread_rwlock_t *lock)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, lock));
+int pthread_rwlock_destroy(pthread_rwlock_t *lock) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1042,11 +990,10 @@ int pthread_rwlock_destroy(pthread_rwlock_t *lock)
 	return 0;
 }
 
-int pthread_rwlock_tryrdlock(pthread_rwlock_t *lock)
-{
+int pthread_rwlock_tryrdlock(pthread_rwlock_t *lock) {
 	ULONG ret;
 
-	D(bug("%s(%ld)\n", __FUNCTION__, lock));
+	D(bug("%s(%8lx)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1060,11 +1007,10 @@ int pthread_rwlock_tryrdlock(pthread_rwlock_t *lock)
 	return (ret == TRUE) ? 0 : EBUSY;
 }
 
-int pthread_rwlock_trywrlock(pthread_rwlock_t *lock)
-{
+int pthread_rwlock_trywrlock(pthread_rwlock_t *lock) {
 	ULONG ret;
 
-	D(bug("%s(%ld)\n", __FUNCTION__, lock));
+	D(bug("%s(%8lx)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1078,9 +1024,8 @@ int pthread_rwlock_trywrlock(pthread_rwlock_t *lock)
 	return (ret == TRUE) ? 0 : EBUSY;
 }
 
-int pthread_rwlock_rdlock(pthread_rwlock_t *lock)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, lock));
+int pthread_rwlock_rdlock(pthread_rwlock_t *lock) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1103,12 +1048,11 @@ int pthread_rwlock_rdlock(pthread_rwlock_t *lock)
 	return 0;
 }
 
-int pthread_rwlock_timedrdlock(pthread_rwlock_t *lock, const struct timespec *abstime)
-{
+int pthread_rwlock_timedrdlock(pthread_rwlock_t *lock, const struct timespec *abstime) {
 	struct timeval end;
 	int result;
 
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, lock, abstime));
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, lock, abstime));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1143,9 +1087,8 @@ int pthread_rwlock_timedrdlock(pthread_rwlock_t *lock, const struct timespec *ab
 #endif
 }
 
-int pthread_rwlock_wrlock(pthread_rwlock_t *lock)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, lock));
+int pthread_rwlock_wrlock(pthread_rwlock_t *lock) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1164,12 +1107,11 @@ int pthread_rwlock_wrlock(pthread_rwlock_t *lock)
 	return 0;
 }
 
-int pthread_rwlock_timedwrlock(pthread_rwlock_t *lock, const struct timespec *abstime)
-{
+int pthread_rwlock_timedwrlock(pthread_rwlock_t *lock, const struct timespec *abstime) {
 	struct timeval end;
 	int result;
 
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, lock, abstime));
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, lock, abstime));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1204,9 +1146,8 @@ int pthread_rwlock_timedwrlock(pthread_rwlock_t *lock, const struct timespec *ab
 #endif
 }
 
-int pthread_rwlock_unlock(pthread_rwlock_t *lock)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, lock));
+int pthread_rwlock_unlock(pthread_rwlock_t *lock) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1230,9 +1171,8 @@ int pthread_rwlock_unlock(pthread_rwlock_t *lock)
 // Spinlock functions
 //
 
-int pthread_spin_init(pthread_spinlock_t *lock, int pshared)
-{
-	D(bug("%s(%ld, %d)\n", __FUNCTION__, lock, pshared));
+int pthread_spin_init(pthread_spinlock_t *lock, int pshared) {
+	D(bug("%s(%8lx, %ld)\n", __FUNCTION__, lock, pshared));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1242,16 +1182,14 @@ int pthread_spin_init(pthread_spinlock_t *lock, int pshared)
 	return 0;
 }
 
-int pthread_spin_destroy(pthread_spinlock_t *lock)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, lock));
+int pthread_spin_destroy(pthread_spinlock_t *lock) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, lock));
 
 	return 0;
 }
 
-int pthread_spin_lock(pthread_spinlock_t *lock)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, lock));
+int pthread_spin_lock(pthread_spinlock_t *lock) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
@@ -1267,35 +1205,33 @@ int pthread_spin_lock(pthread_spinlock_t *lock)
 	}
 	}
 #else
-	while (__sync_val_compare_and_swap((int *)lock, 0, 1) == 0)
+	while (__sync_val_compare_and_swap((int*) lock, 0, 1) == 0)
 		sched_yield(); // TODO: don't yield the CPU every iteration
-						// SBF: if yield is implemented correctly there's nothing else to do.
+					   // SBF: if yield is implemented correctly there's nothing else to do.
 #endif
 
 	return 0;
 }
 
-int pthread_spin_trylock(pthread_spinlock_t *lock)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, lock));
+int pthread_spin_trylock(pthread_spinlock_t *lock) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
 
-	if (__sync_val_compare_and_swap((int *)lock, 0, 1) == 0)
+	if (__sync_val_compare_and_swap((int*) lock, 0, 1) == 0)
 		return EBUSY;
 
 	return 0;
 }
 
-int pthread_spin_unlock(pthread_spinlock_t *lock)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, lock));
+int pthread_spin_unlock(pthread_spinlock_t *lock) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, lock));
 
 	if (lock == NULL)
 		return EINVAL;
 
-	__sync_lock_release((int *)lock);
+	__sync_lock_release((int*) lock);
 
 	return 0;
 }
@@ -1304,11 +1240,10 @@ int pthread_spin_unlock(pthread_spinlock_t *lock)
 // Thread attribute functions
 //
 
-int pthread_attr_init(pthread_attr_t *attr)
-{
+int pthread_attr_init(pthread_attr_t *attr) {
 	struct Task *task;
 
-	D(bug("%s(%ld)\n", __FUNCTION__, attr));
+	D(bug("%s(%8lx)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1316,7 +1251,7 @@ int pthread_attr_init(pthread_attr_t *attr)
 	memset(attr, 0, sizeof(pthread_attr_t));
 	// inherit the priority and stack size of the parent thread
 #ifdef __AMIGA__
-    task = SysBase->ThisTask;
+	task = SysBase->ThisTask;
 #else
 	task = FindTask(NULL);
 #endif
@@ -1325,15 +1260,15 @@ int pthread_attr_init(pthread_attr_t *attr)
 	NewGetTaskAttrs(task, &attr->stacksize68k, sizeof(attr->stacksize68k), TASKINFOTYPE_STACKSIZE_M68K, TAG_DONE);
 	NewGetTaskAttrs(task, &attr->stacksize, sizeof(attr->stacksize), TASKINFOTYPE_STACKSIZE, TAG_DONE);
 #else
-	attr->stacksize = (UBYTE *)task->tc_SPUpper - (UBYTE *)task->tc_SPLower;
+	attr->stacksize = (UBYTE*) task->tc_SPUpper - (UBYTE*) task->tc_SPLower;
 #endif
+	D(bug("%s(%8lx, detach=%ld)\n", __FUNCTION__, attr, (int)attr->detachstate));
 
 	return 0;
 }
 
-int pthread_attr_destroy(pthread_attr_t *attr)
-{
-	D(bug("%s(%ld)\n", __FUNCTION__, attr));
+int pthread_attr_destroy(pthread_attr_t *attr) {
+	D(bug("%s(%8lx)\n", __FUNCTION__, attr));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1343,9 +1278,8 @@ int pthread_attr_destroy(pthread_attr_t *attr)
 	return 0;
 }
 
-int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate)
-{
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, detachstate));
+int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate) {
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, attr, detachstate));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1356,9 +1290,8 @@ int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate)
 	return 0;
 }
 
-int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate)
-{
-	D(bug("%s(%ld, %d)\n", __FUNCTION__, attr, detachstate));
+int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate) {
+	D(bug("%s(%8lx, %ld)\n", __FUNCTION__, attr, detachstate));
 
 	if (attr == NULL || detachstate != PTHREAD_CREATE_JOINABLE)
 		return EINVAL;
@@ -1368,9 +1301,8 @@ int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate)
 	return 0;
 }
 
-int pthread_attr_getstack(const pthread_attr_t *attr, void **stackaddr, size_t *stacksize)
-{
-	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, attr, stackaddr, stacksize));
+int pthread_attr_getstack(const pthread_attr_t *attr, void **stackaddr, size_t *stacksize) {
+	D(bug("%s(%8lx, %8lx, %8lx)\n", __FUNCTION__, attr, stackaddr, stacksize));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1384,9 +1316,8 @@ int pthread_attr_getstack(const pthread_attr_t *attr, void **stackaddr, size_t *
 	return 0;
 }
 
-int pthread_attr_setstack(pthread_attr_t *attr, void *stackaddr, size_t stacksize)
-{
-	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, attr, stackaddr, stacksize));
+int pthread_attr_setstack(pthread_attr_t *attr, void *stackaddr, size_t stacksize) {
+	D(bug("%s(%8lx, %8lx, %ld)\n", __FUNCTION__, attr, stackaddr, stacksize));
 
 	if (attr == NULL || (stackaddr != NULL && stacksize == 0))
 		return EINVAL;
@@ -1397,23 +1328,20 @@ int pthread_attr_setstack(pthread_attr_t *attr, void *stackaddr, size_t stacksiz
 	return 0;
 }
 
-int pthread_attr_getstacksize(const pthread_attr_t *attr, size_t *stacksize)
-{
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, stacksize));
+int pthread_attr_getstacksize(const pthread_attr_t *attr, size_t *stacksize) {
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, attr, stacksize));
 
 	return pthread_attr_getstack(attr, NULL, stacksize);
 }
 
-int pthread_attr_setstacksize(pthread_attr_t *attr, size_t stacksize)
-{
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, stacksize));
+int pthread_attr_setstacksize(pthread_attr_t *attr, size_t stacksize) {
+	D(bug("%s(%8lx, %ld)\n", __FUNCTION__, attr, stacksize));
 
 	return pthread_attr_setstack(attr, NULL, stacksize);
 }
 
-int pthread_attr_getschedparam(const pthread_attr_t *attr, struct sched_param *param)
-{
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, param));
+int pthread_attr_getschedparam(const pthread_attr_t *attr, struct sched_param *param) {
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, attr, param));
 
 	if (attr == NULL)
 		return EINVAL;
@@ -1424,9 +1352,8 @@ int pthread_attr_getschedparam(const pthread_attr_t *attr, struct sched_param *p
 	return 0;
 }
 
-int pthread_attr_setschedparam(pthread_attr_t *attr, const struct sched_param *param)
-{
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, attr, param));
+int pthread_attr_setschedparam(pthread_attr_t *attr, const struct sched_param *param) {
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, attr, param));
 
 	if (attr == NULL || param == NULL)
 		return EINVAL;
@@ -1472,24 +1399,29 @@ AROS_UFH3S(ULONG, CancelHandler,
 }
 #endif
 
-static void StarterFunc(void)
-{
+static void StarterFunc(void) {
 	ThreadInfo *inf;
+	void *ret;
+	pthread_t pid;
 	int i, j;
 	int foundkey = TRUE;
 #ifdef USE_ASYNC_CANCEL
 	APTR oldexcept;
 #endif
 
-	DB2(bug("%s()\n", __FUNCTION__));
-
 #ifdef __AMIGA__
-    struct Process * proc = (struct Process *)SysBase->ThisTask;
-    inf = (ThreadInfo *)proc->pr_CIS;
-    proc->pr_CIS = 0;
+	struct Process *proc = (struct Process*) SysBase->ThisTask;
+	pid = (pthread_t) proc->pr_CIS;
+	proc->pr_CIS = 0;
 #else
-	inf = (ThreadInfo *)FindTask(NULL)->tc_UserData;
+	inf = (pthread_t)FindTask(NULL)->tc_UserData;
 #endif
+
+	DB2(bug("%s(%ld)\n", __FUNCTION__, pid));
+
+	ObtainSemaphore(&thread_sem);
+	inf = GetThreadInfo(pid);
+	inf->started = 1;
 	// trim the name
 	//inf->task->tc_Node.ln_Name[inf->oldlen];
 
@@ -1508,21 +1440,23 @@ static void StarterFunc(void)
 #endif
 
 	// set a jump point for pthread_exit
-	if (!setjmp(inf->jmp))
-	{
+	if (!setjmp(inf->jmp)) {
+		void* (*start)(void*) = inf->start;
+		void *arg = inf->arg;
+		ReleaseSemaphore(&thread_sem);
+
 		DB2(bug("stack soll %ld, ist %ld\n", inf->attr.stacksize, (unsigned)proc->pr_Task.tc_SPUpper - (unsigned)proc->pr_Task.tc_SPLower));
 		// custom stack requires special handling
-		if (inf->attr.stackaddr != NULL && inf->attr.stacksize > 0)
-		{
+		if (inf->attr.stackaddr != NULL && inf->attr.stacksize > 0) {
 #ifdef __AMIGA__
-            struct StackSwapStruct stack;
-            stack.stk_Lower = inf->attr.stackaddr;
-            stack.stk_Upper = (ULONG)((char *)stack.stk_Lower + inf->attr.stacksize);
-            stack.stk_Pointer = (APTR)stack.stk_Upper;
+			struct StackSwapStruct stack;
+			stack.stk_Lower = inf->attr.stackaddr;
+			stack.stk_Upper = (ULONG)((char*) stack.stk_Lower + inf->attr.stacksize);
+			stack.stk_Pointer = (APTR) stack.stk_Upper;
 
-            StackSwap(&stack);
+			StackSwap(&stack);
 
-            inf->ret = inf->start(inf->arg);
+			ret = start(arg);
 #else
 			struct StackSwapArgs swapargs;
 			struct StackSwapStruct stack;
@@ -1539,29 +1473,24 @@ static void StarterFunc(void)
 
 			inf->ret = (void *)NewStackSwap(&stack, inf->start, &swapargs);
 #endif
+		} else {
+			ret = start(arg);
 		}
-		else
-		{
-			inf->ret = inf->start(inf->arg);
-		}
+		Forbid();
 	}
+	// we end up here with Forbid() called before longjmp()
+	Permit();
 
-#ifdef USE_ASYNC_CANCEL
-	// remove the exception handler
-	SetExcept(0, SIGBREAKF_CTRL_C);
-	inf->task->tc_ExceptCode = oldexcept;
-#endif
+	D(bug("* %s(pid=%ld after long jump)\n", __FUNCTION__, pid));
+
 
 	// destroy all non-NULL TLS key values
 	// since the destructors can set the keys themselves, we have to do multiple iterations
 	ObtainSemaphoreShared(&tls_sem);
-	for (j = 0; foundkey && j < PTHREAD_DESTRUCTOR_ITERATIONS; j++)
-	{
+	for (j = 0; foundkey && j < PTHREAD_DESTRUCTOR_ITERATIONS; j++) {
 		foundkey = FALSE;
-		for (i = 0; i < numTlskeys; i++)
-		{
-			if (_tlskeys[i].used && _tlskeys[i].destructor && inf->tlsvalues[i])
-			{
+		for (i = 0; i < numTlskeys; i++) {
+			if (_tlskeys[i].used && _tlskeys[i].destructor && inf->tlsvalues[i]) {
 				void *oldvalue = inf->tlsvalues[i];
 				inf->tlsvalues[i] = NULL;
 				_tlskeys[i].destructor(oldvalue);
@@ -1571,21 +1500,33 @@ static void StarterFunc(void)
 	}
 	ReleaseSemaphore(&tls_sem);
 
+	// inf may be invalid due to realloc
+	ObtainSemaphore(&thread_sem);
+	inf = GetThreadInfo(pid);
+	inf->ret = ret;
+
+#ifdef USE_ASYNC_CANCEL
+	// remove the exception handler
+	SetExcept(0, SIGBREAKF_CTRL_C);
+	inf->task->tc_ExceptCode = oldexcept;
+#endif
+
+	DB2(bug("%s(releasing inf ptr %8lx)\n", __FUNCTION__, inf));
 	// tell the parent thread that we are done
 	Forbid();
-	inf->finished = TRUE;
-	inf->task = NULL;
+	inf->task = (struct Task *)-1;
+	inf->finished = 1;
+	ReleaseSemaphore(&thread_sem);
 	Signal(inf->parent, SIGF_PARENT);
 }
 
-int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)(void *), void *arg)
-{
+int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void* (*start)(void*), void *arg) {
 	ThreadInfo *inf;
 	char name[NAMELEN];
 	size_t oldlen;
 	pthread_t threadnew;
 
-	D(bug("%s(%ld, %ld, %ld, %ld)\n", __FUNCTION__, thread, attr, start, arg));
+	D(bug("%s(%8lx, %8lx, %8lx, %8lx)\n", __FUNCTION__, thread, attr, start, arg));
 
 	if (thread == NULL || start == NULL)
 		return EINVAL;
@@ -1594,51 +1535,42 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
 
 	// grab an empty thread slot
 	threadnew = GetThreadId(NULL);
-	if (threadnew == PTHREAD_THREADS_MAX)
-	{
+	if (threadnew == PTHREAD_THREADS_MAX) {
 		ReleaseSemaphore(&thread_sem);
 		return EAGAIN;
 	}
 
 	if (threadnew == numThreads) {
-		pthread_t i = 1;
-		// try to find a free slot
-		for (; i < numThreads; ++i) {
-			if (_threads[i].task == 0)
-				break;
-		}
+		// resize the thread's storage.
+		unsigned n = numThreads + numThreads + 2;
 
-		if (i < threadnew)
-			threadnew = i;
-		else {
-			// resize the thread's storage.
-			unsigned n = numThreads + numThreads + 2;
-			if (n > PTHREAD_THREADS_MAX)
-				n = PTHREAD_THREADS_MAX;
+		D(bug("** %s(resize to %ld)\n", __FUNCTION__, n));
 
-			if (n != numThreads) {
-				ThreadInfo * t = (ThreadInfo *)realloc(_threads, n * sizeof(ThreadInfo));
-				if (!t) {
-					ReleaseSemaphore(&thread_sem);
-					return EAGAIN;
-				}
+		if (n > PTHREAD_THREADS_MAX)
+			n = PTHREAD_THREADS_MAX;
 
-				memset(&t[numThreads], 0, (n - numThreads) * sizeof(ThreadInfo));
-
-				_threads = t;
-				numThreads = n;
+		if (n != numThreads) {
+			ThreadInfo *t = (ThreadInfo*) realloc(_threads, n * sizeof(ThreadInfo));
+			if (!t) {
+				ReleaseSemaphore(&thread_sem);
+				return EAGAIN;
 			}
+
+			memset(&t[numThreads], 0, (n - numThreads) * sizeof(ThreadInfo));
+
+			_threads = t;
+			numThreads = n;
 		}
 	}
 
 	// prepare the ThreadInfo structure
 	inf = GetThreadInfo(threadnew);
 	memset(inf, 0, sizeof(ThreadInfo));
-	D(bug("thread=%ld, inf=%ld\n", threadnew, inf));
+	D(bug("new thread=%ld, inf=%8lx\n", threadnew, inf));
 	inf->start = start;
 	inf->arg = arg;
 #ifdef __AMIGA__
-    inf->parent = SysBase->ThisTask;
+	inf->parent = SysBase->ThisTask;
 #else
 	inf->parent = FindTask(NULL);
 #endif
@@ -1646,37 +1578,37 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
 		inf->attr = *attr;
 	else
 		pthread_attr_init(&inf->attr);
-	NEWLIST((struct List *)&inf->cleanup);
+	NEWLIST((struct List* )&inf->cleanup);
 	inf->cancelstate = PTHREAD_CANCEL_ENABLE;
 	inf->canceltype = PTHREAD_CANCEL_DEFERRED;
 
 	// let's trick CreateNewProc into allocating a larger buffer for the name
-	snprintf(name, sizeof(name), "pthread thread #%d", threadnew);
+	snprintf(name, sizeof(name), "pthread thread #%ld", threadnew);
 	oldlen = strlen(name);
 	memset(name + oldlen, ' ', sizeof(name) - oldlen - 1);
 	name[sizeof(name) - 1] = '\0';
 
 	// start the child thread
-	inf->task = (struct Task *)CreateNewProcTags(NP_Entry, (IPTR)StarterFunc,
+	inf->task = (struct Task*) CreateNewProcTags(NP_Entry, (IPTR) StarterFunc,
 #ifdef __MORPHOS__
 		NP_CodeType, CODETYPE_PPC,
 		(inf->attr.stackaddr == NULL && inf->attr.stacksize > 0) ? NP_PPCStackSize : TAG_IGNORE, inf->attr.stacksize,
 		inf->attr.stacksize68k > 0 ? NP_StackSize : TAG_IGNORE, inf->attr.stacksize68k,
 #else
-		(inf->attr.stackaddr == NULL && inf->attr.stacksize > 0) ? NP_StackSize : TAG_IGNORE, inf->attr.stacksize,
+			(inf->attr.stackaddr == NULL && inf->attr.stacksize > 0) ? NP_StackSize : TAG_IGNORE, inf->attr.stacksize,
 #endif
 #ifdef __AMIGA__
-		NP_Input, (IPTR)inf,
+			NP_Input, (IPTR) threadnew,
 #else
-		NP_UserData, inf,
+		NP_UserData, threadnew,
 #endif
-        NP_Name, (IPTR)name,
-		TAG_DONE);
+			NP_Name, (IPTR) name, TAG_DONE);
 
-    ReleaseSemaphore(&thread_sem);
+	ReleaseSemaphore(&thread_sem);
 
-	if (!inf->task)
-	{
+	D(bug("new thread=%ld, task=%8lx, fini=%ld, detach=%ld\n", threadnew, inf->task, (int)inf->finished, (int)inf->attr.detachstate));
+
+	if (!inf->task) {
 		inf->parent = NULL;
 		return EAGAIN;
 	}
@@ -1686,60 +1618,72 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start)
 	return 0;
 }
 
-int pthread_detach(pthread_t thread)
-{
+int pthread_detach(pthread_t thread) {
 	D(bug("%s(%ld) not implemented\n", __FUNCTION__, thread));
 
 	return ESRCH;
 }
 
-int pthread_join(pthread_t thread, void **value_ptr)
-{
+int pthread_join(pthread_t thread, void **value_ptr) {
 	ThreadInfo *inf;
-
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, thread, value_ptr));
-
-	inf = GetThreadInfo(thread);
-
-	if (inf == NULL || inf->parent == NULL)
-		return ESRCH;
+	struct Task * task = SysBase->ThisTask;
 
 	pthread_testcancel();
 
-	D(bug("%s finished before wait (%ld, inf=%ld, fini=%ld)\n", __FUNCTION__, thread, inf, inf->finished));
-	while (!inf->finished)
-		Wait(SIGF_PARENT);
+	D(bug("%s(%ld, %8lx)\n", __FUNCTION__, thread, value_ptr));
+	if (!thread || pthread_self() == thread)
+		return EDEADLK;
 
-	D(bug("%s finished after wait (%ld, %ld)\n", __FUNCTION__, thread, inf->finished));
+	ObtainSemaphore(&thread_sem);
+	inf = GetThreadInfo(thread);
+	D(bug("%s(%ld, inf=%8lx, fini=%ld, detach=%ld, started=%ld)\n", __FUNCTION__, thread, inf, (int)(inf ? inf->finished : 0), (int)(inf ? inf->attr.detachstate : 0), inf->started));
+	if (inf == NULL || !inf->task)
+		return ESRCH;
+
+	if (inf->attr.detachstate)
+		return EINVAL;
+
+	// busy yield loop...
+	while (!inf->started || !inf->finished) {
+		ReleaseSemaphore(&thread_sem);
+		D(bug("waiting for %ld to start...\n", thread));
+		--task->tc_Node.ln_Pri;
+		sched_yield();
+		++task->tc_Node.ln_Pri;
+
+#if 0
+		// TODO add proper signal waiting - but some that works from any task
+		D(bug("%s waiting for signal (%ld, inf=%8lx, fini=%ld)\n", __FUNCTION__, thread, inf, (int)inf->finished));
+		Wait(SIGF_PARENT);
+#endif
+
+		ObtainSemaphore(&thread_sem);
+		inf = GetThreadInfo(thread);
+	}
+
+	D(bug("%s finished after wait (%ld, %ld)\n", __FUNCTION__, thread, (int)inf->finished));
 	if (value_ptr)
 		*value_ptr = inf->ret;
 
-	inf->task = 0; // mark as free
-#if 0
-	ObtainSemaphore(&thread_sem);
-	memset(inf, 0, sizeof(ThreadInfo));
+	inf->task = NULL;
 	ReleaseSemaphore(&thread_sem);
-#endif
-
 	return 0;
 }
 
-int pthread_equal(pthread_t t1, pthread_t t2)
-{
+int pthread_equal(pthread_t t1, pthread_t t2) {
 	D(bug("%s(%ld, %ld)\n", __FUNCTION__, t1, t2));
 
 	return (t1 == t2);
 }
 
-pthread_t pthread_self(void)
-{
+pthread_t pthread_self(void) {
 	struct Task *task;
 	pthread_t thread;
 
-	D(bug("%s()\n", __FUNCTION__));
+//	D(bug("%s()\n", __FUNCTION__));
 
 #ifdef __AMIGA__
-    task = SysBase->ThisTask;
+	task = SysBase->ThisTask;
 #else
 	task = FindTask(NULL);
 #endif
@@ -1752,26 +1696,27 @@ pthread_t pthread_self(void)
 	return thread;
 }
 
-int pthread_cancel(pthread_t thread)
-{
+int pthread_cancel(pthread_t thread) {
 	ThreadInfo *inf;
 
 	D(bug("%s(%ld)\n", __FUNCTION__, thread));
 
+	ObtainSemaphore(&thread_sem);
 	inf = GetThreadInfo(thread);
 
-	if (inf == NULL || inf->parent == NULL || inf->canceled == TRUE)
+	if (inf == NULL || inf->parent == NULL || inf->canceled == TRUE) {
+		ReleaseSemaphore(&thread_sem);
 		return ESRCH;
+	}
 
 	inf->canceled = TRUE;
 
 	// we might have to cancel the thread immediately
-	if (inf->canceltype == PTHREAD_CANCEL_ASYNCHRONOUS && inf->cancelstate == PTHREAD_CANCEL_ENABLE)
-	{
+	if (inf->canceltype == PTHREAD_CANCEL_ASYNCHRONOUS && inf->cancelstate == PTHREAD_CANCEL_ENABLE) {
 		struct Task *task;
 
 #ifdef __AMIGA__
-        task = SysBase->ThisTask;
+		task = SysBase->ThisTask;
 #else
 		task = FindTask(NULL);
 #endif
@@ -1781,16 +1726,16 @@ int pthread_cancel(pthread_t thread)
 		else
 			Signal(inf->task, SIGBREAKF_CTRL_C); // trigger the exception handler 
 	}
+	ReleaseSemaphore(&thread_sem);
 
 	return 0;
 }
 
-int pthread_setcancelstate(int state, int *oldstate)
-{
+int pthread_setcancelstate(int state, int *oldstate) {
 	pthread_t thread;
 	ThreadInfo *inf;
 
-	D(bug("%s(%d, %ld)\n", __FUNCTION__, state, oldstate));
+	D(bug("%s(%ld, %8lx)\n", __FUNCTION__, state, oldstate));
 
 	if (state != PTHREAD_CANCEL_ENABLE && state != PTHREAD_CANCEL_DISABLE)
 		return EINVAL;
@@ -1806,85 +1751,94 @@ int pthread_setcancelstate(int state, int *oldstate)
 	return 0;
 }
 
-int pthread_setcanceltype(int type, int *oldtype)
-{
+int pthread_setcanceltype(int type, int *oldtype) {
 	pthread_t thread;
 	ThreadInfo *inf;
 
-	D(bug("%s(%d, %ld)\n", __FUNCTION__, type, oldtype));
+	D(bug("%s(%ld, %8lx)\n", __FUNCTION__, type, oldtype));
 
 	if (type != PTHREAD_CANCEL_DEFERRED && type != PTHREAD_CANCEL_ASYNCHRONOUS)
 		return EINVAL;
 
 	thread = pthread_self();
+
+	ObtainSemaphore(&thread_sem);
 	inf = GetThreadInfo(thread);
 
 	if (oldtype)
 		*oldtype = inf->canceltype;
 
 	inf->canceltype = type;
+	ReleaseSemaphore(&thread_sem);
 
 	return 0;
 }
 
-void pthread_testcancel(void)
-{
+void pthread_testcancel(void) {
 	pthread_t thread;
 	ThreadInfo *inf;
+	int flag;
 
 	D(bug("%s()\n", __FUNCTION__));
 
 	thread = pthread_self();
+
+	ObtainSemaphore(&thread_sem);
 	inf = GetThreadInfo(thread);
 
-	if (inf->canceled && (inf->cancelstate == PTHREAD_CANCEL_ENABLE))
+	flag = inf->canceled && (inf->cancelstate == PTHREAD_CANCEL_ENABLE);
+	ReleaseSemaphore(&thread_sem);
+
+	if (flag)
 		pthread_exit(PTHREAD_CANCELED);
 }
 
-void pthread_exit(void *value_ptr)
-{
-	pthread_t thread;
+void pthread_exit(void *value_ptr) {
+	pthread_t pid;
 	ThreadInfo *inf;
 	CleanupHandler *handler;
 
-	D(bug("%s(%ld)\n", __FUNCTION__, value_ptr));
+	pid = pthread_self();
 
-	thread = pthread_self();
+	D(bug("%s(pid=%ld, %8lx)\n", __FUNCTION__, pid, value_ptr));
 
-	inf = GetThreadInfo(thread);
+	ObtainSemaphore(&thread_sem);
+	inf = GetThreadInfo(pid);
 	inf->ret = value_ptr;
 
 	// execute the clean-up handlers
-	while ((handler = (CleanupHandler *)RemTail((struct List *)&inf->cleanup)))
+	while ((handler = (CleanupHandler*) RemTail((struct List*) &inf->cleanup)))
 		if (handler->routine)
 			handler->routine(handler->arg);
 
 	// only for real threads.
-	if (thread)
+	if (pid) {
+		Forbid();
+		ReleaseSemaphore(&thread_sem);
 		longjmp(inf->jmp, 1);
+	}
+	ReleaseSemaphore(&thread_sem);
+
 }
 
-static void OnceCleanup(void *arg)
-{
+static void OnceCleanup(void *arg) {
 	pthread_once_t *once_control;
 
-	DB2(bug("%s(%ld)\n", __FUNCTION__, arg));
+	DB2(bug("%s(%8lx)\n", __FUNCTION__, arg));
 
-	once_control = (pthread_once_t *)arg;
+	once_control = (pthread_once_t*) arg;
 	pthread_spin_unlock(&once_control->lock);
 }
 
-int pthread_once(pthread_once_t *once_control, void (*init_routine)(void))
-{
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, once_control, init_routine));
+int pthread_once(pthread_once_t *once_control, void (*init_routine)(void)) {
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, once_control, init_routine));
 
 	if (once_control == NULL || init_routine == NULL)
 		return EINVAL;
 
 	if (!once_control->done) {
 		pthread_spin_lock(&once_control->lock);
-		if (!once_control->done)
-		{
+		if (!once_control->done) {
 			pthread_cleanup_push(OnceCleanup, once_control);
 			(*init_routine)();
 			pthread_cleanup_pop(0);
@@ -1899,21 +1853,23 @@ int pthread_once(pthread_once_t *once_control, void (*init_routine)(void))
 // Scheduling functions
 //
 
-int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param *param)
-{
+int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param *param) {
 	ThreadInfo *inf;
 
-	D(bug("%s(%ld, %d, %ld)\n", __FUNCTION__, thread, policy, param));
+	D(bug("%s(%ld, %ld, %8lx)\n", __FUNCTION__, thread, policy, param));
 
 	if (param == NULL)
 		return EINVAL;
 
+	ObtainSemaphore(&thread_sem);
 	inf = GetThreadInfo(thread);
+
+	if (inf)
+		SetTaskPri(inf->task, param->sched_priority);
+	ReleaseSemaphore(&thread_sem);
 
 	if (inf == NULL)
 		return ESRCH;
-
-	SetTaskPri(inf->task, param->sched_priority);
 
 	return 0;
 }
@@ -1921,8 +1877,7 @@ int pthread_setschedparam(pthread_t thread, int policy, const struct sched_param
 //
 // Non-portable functions
 //
-int pthread_setname_np(pthread_t thread, const char *name)
-{
+int pthread_setname_np(pthread_t thread, const char *name) {
 	ThreadInfo *inf;
 	char *currentname;
 	size_t namelen;
@@ -1932,48 +1887,53 @@ int pthread_setname_np(pthread_t thread, const char *name)
 	if (name == NULL)
 		return ERANGE;
 
+	ObtainSemaphore(&thread_sem);
 	inf = GetThreadInfo(thread);
 
+	if (inf != NULL) {
+		currentname = inf->task->tc_Node.ln_Name;
+
+		if (inf->parent == NULL)
+			namelen = strlen(currentname) + 1;
+		else
+			namelen = NAMELEN;
+
+		if (strlen(name) + 1 > namelen)
+			inf = NULL;
+		else
+			strncpy(currentname, name, namelen);
+	}
+	ReleaseSemaphore(&thread_sem);
 	if (inf == NULL)
 		return ERANGE;
-
-    currentname = inf->task->tc_Node.ln_Name;
-
-	if (inf->parent == NULL)
-		namelen = strlen(currentname) + 1;
-	else
-		namelen = NAMELEN;
-
-	if (strlen(name) + 1 > namelen)
-		return ERANGE;
-
-	strncpy(currentname, name, namelen);
 
 	return 0;
 }
 
-int pthread_getname_np(pthread_t thread, char *name, size_t len)
-{
+int pthread_getname_np(pthread_t thread, char *name, size_t len) {
 	ThreadInfo *inf;
 	char *currentname;
 
-	D(bug("%s(%ld, %ld, %ld)\n", __FUNCTION__, thread, name, len));
+	D(bug("%s(%ld, %s, %ld)\n", __FUNCTION__, thread, name, len));
 
 	if (name == NULL || len == 0)
 		return ERANGE;
 
+	ObtainSemaphore(&thread_sem);
 	inf = GetThreadInfo(thread);
 
+	if (inf) {
+		currentname = inf->task->tc_Node.ln_Name;
+
+		if (strlen(currentname) + 1 > len)
+			inf = NULL;
+		else
+			// length check passed - strcpy is ok.
+			strcpy(name, currentname);
+	}
+	ReleaseSemaphore(&thread_sem);
 	if (inf == NULL)
 		return ERANGE;
-
-    currentname = inf->task->tc_Node.ln_Name;
-
-	if (strlen(currentname) + 1 > len)
-		return ERANGE;
-
-	// length check passed - strcpy is ok.
-	strcpy(name, currentname);
 
 	return 0;
 }
@@ -1982,13 +1942,12 @@ int pthread_getname_np(pthread_t thread, char *name, size_t len)
 // Cancellation cleanup
 //
 
-void pthread_cleanup_push(void (*routine)(void *), void *arg)
-{
+void pthread_cleanup_push(void (*routine)(void*), void *arg) {
 	pthread_t thread;
 	ThreadInfo *inf;
 	CleanupHandler *handler;
 
-	D(bug("%s(%ld, %ld)\n", __FUNCTION__, routine, arg));
+	D(bug("%s(%8lx, %8lx)\n", __FUNCTION__, routine, arg));
 
 	if (routine == NULL)
 		return;
@@ -1999,15 +1958,17 @@ void pthread_cleanup_push(void (*routine)(void *), void *arg)
 		return;
 
 	thread = pthread_self();
-	inf = GetThreadInfo(thread);
 
 	handler->routine = routine;
 	handler->arg = arg;
-	AddTail((struct List *)&inf->cleanup, (struct Node *)handler);
+
+	ObtainSemaphore(&thread_sem);
+	inf = GetThreadInfo(thread);
+	AddTail((struct List*) &inf->cleanup, (struct Node*) handler);
+	ReleaseSemaphore(&thread_sem);
 }
 
-void pthread_cleanup_pop(int execute)
-{
+void pthread_cleanup_pop(int execute) {
 	pthread_t thread;
 	ThreadInfo *inf;
 	CleanupHandler *handler;
@@ -2015,8 +1976,11 @@ void pthread_cleanup_pop(int execute)
 	D(bug("%s(%d)\n", __FUNCTION__, execute));
 
 	thread = pthread_self();
+
+	ObtainSemaphore(&thread_sem);
 	inf = GetThreadInfo(thread);
-	handler = (CleanupHandler *)RemTail((struct List *)&inf->cleanup);
+	handler = (CleanupHandler*) RemTail((struct List*) &inf->cleanup);
+	ReleaseSemaphore(&thread_sem);
 
 	if (handler && handler->routine && execute)
 		handler->routine(handler->arg);
@@ -2028,9 +1992,8 @@ void pthread_cleanup_pop(int execute)
 // Signalling
 //
 
-int pthread_kill(pthread_t thread, int sig)
-{
-	D(bug("%s(%ld, %d) not implemented\n", __FUNCTION__, thread, sig));
+int pthread_kill(pthread_t thread, int sig) {
+	D(bug("%s(%ld, %ld) not implemented\n", __FUNCTION__, thread, sig));
 
 	return EINVAL;
 }
@@ -2042,8 +2005,9 @@ int pthread_kill(pthread_t thread, int sig)
 #ifndef __AMIGA__
 static
 #endif
-int __pthread_Init_Func(void)
-{
+int __pthread_Init_Func(void) {
+	D(bug("%s\n", "********************"));
+
 	DB2(bug("%s()\n", __FUNCTION__));
 
 #ifdef __MORPHOS__
@@ -2056,28 +2020,27 @@ int __pthread_Init_Func(void)
 	InitSemaphore(&tls_sem);
 
 	// reserve ID 0 for the main thread
-	_threads = (ThreadInfo *)malloc(sizeof(ThreadInfo));
+	_threads = (ThreadInfo*) malloc(sizeof(ThreadInfo) * INITIALSIZE);
 	if (!_threads)
 		exit(10);
-	memset(_threads, 0, sizeof(ThreadInfo));
-	numThreads = 1;
+	memset(_threads, 0, sizeof(ThreadInfo) * INITIALSIZE);
+	numThreads = INITIALSIZE;
 
 	ThreadInfo *inf = &_threads[0];
 #ifdef __AMIGA__
-    inf->task = SysBase->ThisTask;
+	inf->task = SysBase->ThisTask;
 #else
     inf->task = FindTask(NULL);
 #endif
 
-	NEWLIST((struct List *)&inf->cleanup);
+	NEWLIST((struct List* )&inf->cleanup);
 	return TRUE;
 }
 
 #ifndef __AMIGA__
 static
 #endif
-void __pthread_Exit_Func(void)
-{
+void __pthread_Exit_Func(void) {
 #if defined(__MORPHOS__) || defined(__AMIGA__)
 	pthread_t i;
 #endif
@@ -2089,9 +2052,17 @@ void __pthread_Exit_Func(void)
 
 	// wait for the threads?
 #if defined(__MORPHOS__) || defined(__AMIGA__)
+
 	// if we don't do this we can easily end up with unloaded code being executed
-	for (i = 1; i < numThreads; i++)
+	for (i = 1; i < numThreads; i++) {
+		// a thread might still be in creation!
+		ObtainSemaphore(&thread_sem);
+		ThreadInfo *inf = GetThreadInfo(i);
+		inf->attr.detachstate = PTHREAD_CREATE_JOINABLE; // force it to be joinable or waiting may fail.
+		ReleaseSemaphore(&thread_sem);
 		pthread_join(i, NULL);
+	}
+
 #endif
 #ifdef __MORPHOS__
 	CloseDevice((APTR) &waitutc);

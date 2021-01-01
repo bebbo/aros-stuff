@@ -40,7 +40,8 @@
 		#define bug DebugPrintF
 	#else
 		#include <clib/debug_protos.h>
-		#define bug(fmt, ...) kprintf((CONST_STRPTR)fmt, __VA_ARGS__)
+//		#define bug(fmt, ...) kprintf((CONST_STRPTR)fmt, __VA_ARGS__)
+		#define bug(fmt, ...) do {Forbid();kprintf((CONST_STRPTR)"%2ld: " fmt, pthread_self(), __VA_ARGS__);Permit();} while(0)
 	#endif
 #endif
 

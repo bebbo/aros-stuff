@@ -102,9 +102,9 @@ struct pthread_attr
 #ifdef __MORPHOS__
 	size_t stacksize68k;
 #endif
-	int detachstate;
 	struct sched_param param;
-	int inheritsched;
+	short detachstate;
+	short inheritsched;
 	int contentionscope;
 };
 
